@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import threading
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -23,6 +25,26 @@ TOKEN_FIELDS = (
     "input_uncached_tokens", "output_audio_tokens", "output_image_tokens", "output_text_tokens",
 )
 GROUP_FIELDS = ("project_id", "user_id", "api_key_id", "model", "batch", "service_tier")
+PUBLIC_USAGE_FIELDS = (
+    "result_identity", "revision", "source", "usage_family", "bucket_start", "bucket_end", "bucket_width",
+    *GROUP_FIELDS, "input_tokens", "output_tokens", "num_model_requests", *TOKEN_FIELDS,
+    "request_start", "request_end", "retrieved_at", "adapter_schema_version", "first_observed_at", "last_observed_at",
+)
+_SYNC_LOCK = threading.Lock()
+_AUTHORIZATION_VALUE = re.compile(r"(?i)(authorization\s*[:=]\s*[\"']?(?:bearer\s+)?)[^\"'\s,}\]]+(?:[\"'])?")
+
+
+class SanitizedAdminError(RuntimeError):
+    """An Admin error safe to persist and render outside the adapter."""
+
+
+def sanitize_admin_error(value: object) -> str:
+    """Remove credential material from one externally rendered Admin error."""
+    message = str(value)
+    secret = os.environ.get("OPENAI_ADMIN_KEY")
+    if secret:
+        message = message.replace(secret, "[REDACTED]")
+    return _AUTHORIZATION_VALUE.sub(r"\1[REDACTED]", message)
 
 
 class UsageClient(Protocol):
@@ -41,8 +63,8 @@ def _error_status(exc: Exception) -> int | None:
 
 
 def redact_error(value: str) -> str:
-    secret = os.environ.get("OPENAI_ADMIN_KEY")
-    return value.replace(secret, "[REDACTED]") if secret else value
+    """Backward-compatible name for the central Admin error boundary."""
+    return sanitize_admin_error(value)
 
 
 def _validate_page(page: Any) -> tuple[list[Any], bool, str | None]:
@@ -64,9 +86,13 @@ def health(connection: Any, *, enabled: bool, credential_present: bool) -> dict[
     row = connection.execute("SELECT * FROM openai_admin_sync_state WHERE collector=?", (COLLECTOR,)).fetchone()
     if not row:
         return {"collector": COLLECTOR, "status": "ADMIN_READY", "reason": "credential available; no sync completed", "last_success": None, "last_error": None}
-    result = dict(row)
-    result["reason"] = "last synchronization state"
-    return result
+    return {
+        "collector": row["collector"],
+        "status": row["status"],
+        "reason": "last synchronization state",
+        "last_success": row["last_success"],
+        "last_error": sanitize_admin_error(row["last_error"]) if row["last_error"] is not None else None,
+    }
 
 
 def _set_state(connection: Any, status: str, *, start: int | None = None, end: int | None = None,
@@ -131,7 +157,7 @@ def _store(connection: Any, row: dict[str, Any]) -> bool:
     return True
 
 
-def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now: datetime | None = None,
+def _sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now: datetime | None = None,
           sleep: Callable[[float], None] = time.sleep, max_attempts: int = 3) -> dict[str, Any]:
     """Synchronize one bounded window. Only the injected official SDK client performs network I/O."""
     if not config.enabled:
@@ -145,10 +171,11 @@ def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now
     else:
         start = end - config.initial_lookback_hours * 3600
         if state and state["completed_end"] is not None:
-            start = max(start, int(state["completed_end"]) - config.overlap_hours * 3600)
+            start = int(state["completed_end"]) - config.overlap_hours * 3600
         cursor = None
     retrieved = utc_now()
-    _set_state(connection, "ADMIN_SYNCING", start=start, end=end, cursor=cursor, error=None)
+    with connection:
+        _set_state(connection, "ADMIN_SYNCING", start=start, end=end, cursor=cursor, error=None)
     pages = 0
     buckets = 0
     seen: set[str] = set()
@@ -168,7 +195,8 @@ def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now
                     break
                 except Exception as exc:  # SDK exceptions expose status_code without leaking request headers.
                     status = _error_status(exc)
-                    if status in {401, 403} or status is None and attempt == max_attempts - 1 or status not in {408, 409, 429} and not (status is not None and status >= 500):
+                    retryable = status is None or status in {408, 409, 429} or (status is not None and status >= 500)
+                    if not retryable or attempt == max_attempts - 1:
                         raise
                     sleep(0.25 * (2 ** attempt))
             data, has_more, next_page = _validate_page(response)
@@ -189,14 +217,29 @@ def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now
             cursor = next_page
         with connection:
             _set_state(connection, "ADMIN_HEALTHY", completed_start=start, completed_end=end, cursor=None, success=utc_now(), error=None, pages=pages, buckets=buckets)
-    except Exception as exc:
-        safe_error = redact_error(str(exc))
+    except Exception as exc:  # noqa: BLE001 - all adapter failures cross one sanitization boundary.
+        safe_error = sanitize_admin_error(exc)
         if "OPENAI_ADMIN_KEY" in safe_error:
             safe_error = "Admin authentication failure"
         with connection:
             _set_state(connection, "ADMIN_FAILED", cursor=cursor, error=safe_error, pages=pages, buckets=buckets)
-        raise
+        try:
+            safe_exception = type(exc)(safe_error)
+        except Exception:  # noqa: BLE001 - fallback must remain inside the sanitization boundary.
+            safe_exception = SanitizedAdminError(safe_error)
+        raise safe_exception from None
     return health(connection, enabled=True, credential_present=True)
+
+
+def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now: datetime | None = None,
+          sleep: Callable[[float], None] = time.sleep, max_attempts: int = 3) -> dict[str, Any]:
+    """Run one Admin sync, failing fast when another local sync is active."""
+    if not _SYNC_LOCK.acquire(blocking=False):
+        return {"collector": COLLECTOR, "status": "ADMIN_BUSY", "reason": "another Admin sync is active", "last_success": None, "last_error": None}
+    try:
+        return _sync(connection, config, client, now=now, sleep=sleep, max_attempts=max_attempts)
+    finally:
+        _SYNC_LOCK.release()
 
 
 def create_client(*, enabled: bool) -> Any | None:
@@ -219,8 +262,12 @@ def read_usage(connection: Any, *, limit: int, offset: int = 0, start: int | Non
     if end is not None:
         clauses.append("bucket_start < ?"); params.append(end)
     where = " AND ".join(clauses)
-    rows = connection.execute(f"SELECT * FROM openai_usage_completions WHERE {where} ORDER BY bucket_start DESC,result_identity DESC LIMIT ? OFFSET ?", [*params, limit + 1, offset]).fetchall()
-    items = [dict(row) for row in rows[:limit]]
-    for item in items:
-        item.pop("result_sha256", None)
+    fields = ",".join(PUBLIC_USAGE_FIELDS)
+    rows = connection.execute(f"SELECT {fields} FROM openai_usage_completions WHERE {where} ORDER BY bucket_start DESC,result_identity DESC LIMIT ? OFFSET ?", [*params, limit + 1, offset]).fetchall()
+    items = []
+    for row in rows[:limit]:
+        item = {key: row[key] for key in PUBLIC_USAGE_FIELDS}
+        if item["batch"] is not None:
+            item["batch"] = bool(item["batch"])
+        items.append(item)
     return {"items": items, "next_cursor": str(offset + limit) if len(rows) > limit else None, "has_more": len(rows) > limit}

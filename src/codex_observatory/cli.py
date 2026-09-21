@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"status": "degraded", "checks": [{"name": "doctor", "status": "error", "detail": str(exc)}]}))
             return 1
     if args.command == "admin-sync":
-        from .openai_admin import create_client, sync
+        from .openai_admin import create_client, sanitize_admin_error, sync
         from .sqlite import connect, migrate
         config = load_config()
         if not config.collectors.openai_admin.enabled:
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(sync(connection, config.collectors.openai_admin, client), indent=2))
             return 0
         except Exception as exc:  # noqa: BLE001 - adapter errors are reported without credential material.
-            print(json.dumps({"status": "ADMIN_FAILED", "error": str(exc)}))
+            print(json.dumps({"status": "ADMIN_FAILED", "error": sanitize_admin_error(exc)}))
             return 1
         finally:
             connection.close()

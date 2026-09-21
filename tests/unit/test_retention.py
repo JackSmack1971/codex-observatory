@@ -163,6 +163,13 @@ def test_token_usage_is_a_current_projection_only() -> None:
     assert "app_server_token_usage" not in PRUNABLE_TIMESTAMP_COLUMNS
 
 
+def test_admin_usage_is_retained_historical_evidence() -> None:
+    assert TABLE_CLASSIFICATIONS["openai_usage_completions"] is RetentionTableClass.HISTORICAL_EVIDENCE
+    assert "openai_usage_completions" not in PRUNABLE_HISTORY_TABLES
+    assert "openai_usage_completions" not in PRUNABLE_HISTORY_ORDER
+    assert "openai_usage_completions" not in PRUNABLE_TIMESTAMP_COLUMNS
+
+
 def test_retention_plan_represents_immutable_diagnostics() -> None:
     diagnostic = RetentionDiagnosticV1(
         table="events",
