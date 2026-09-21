@@ -84,7 +84,7 @@ class AnalyticsService:
         return [
             identity for identity, row in sorted(
                 population.items(),
-                key=lambda item: (str(item[1]["event_time"]), item[0]),
+                key=lambda item: (_timestamp_sort_key(item[1]["event_time"]), item[0]),
                 reverse=True,
             )
         ]
@@ -153,12 +153,14 @@ class AnalyticsService:
             + hot_where, hot_params,
         ).fetchall()
         identities = {
-            row["snapshot_observation_id"]: str(row["captured_at"]) for row in archived
+            row["snapshot_observation_id"]: row["captured_at"] for row in archived
         }
         identities.update({row["snapshot_observation_id"]: row["captured_at"] for row in hot})
         return [
             identity for identity, _ in sorted(
-                identities.items(), key=lambda item: (item[1], item[0]), reverse=True,
+                identities.items(),
+                key=lambda item: (_timestamp_sort_key(item[1]), item[0]),
+                reverse=True,
             )
         ]
 
@@ -194,6 +196,13 @@ def _canonical_timestamp(value: str) -> str:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return value
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _timestamp_sort_key(value: str | datetime) -> datetime:
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _sqlite_time_filter(

@@ -80,20 +80,20 @@ def test_duckdb_partition_and_typed_queries(tmp_path: Path) -> None:
 def test_hot_cold_queries_deduplicate_overlap_and_preserve_order(tmp_path: Path) -> None:
     connection = _db(tmp_path)
     root = tmp_path / "archive"
-    _event(connection, "cold", "2026-01-01T00:00:00Z")
-    _event(connection, "overlap", "2026-02-01T00:00:00Z")
+    _event(connection, "z-cold", "2026-02-01T00:00:00Z")
+    _event(connection, "a-overlap", "2026-02-01T00:00:00Z")
     connection.commit()
     export_dataset(connection, root, "events")
     _event(connection, "hot", "2026-09-20T00:00:00Z")
     connection.commit()
 
     service = AnalyticsService(connection, root)
-    assert service.event_identities() == ["hot", "overlap", "cold"]
+    assert service.event_identities() == ["hot", "z-cold", "a-overlap"]
     assert service.event_count("2026-09-01T00:00:00Z") == 1
     assert service.event_count(end="2026-03-01T00:00:00Z") == 2
-    connection.execute("DELETE FROM events WHERE event_id='cold'")
+    connection.execute("DELETE FROM events WHERE event_id='z-cold'")
     connection.commit()
-    assert service.event_identities() == ["hot", "overlap", "cold"]
+    assert service.event_identities() == ["hot", "z-cold", "a-overlap"]
     connection.close()
 
 
