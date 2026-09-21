@@ -14,6 +14,14 @@ from .config import admin_key_present, load_config
 from .paths import resolve_paths
 from .version import __version__
 
+DEGRADED_DOCTOR_STATUSES = frozenset({
+    "missing", "degraded", "disconnected", "connecting", "incompatible",
+    "not_configured", "not_implemented", "blocking",
+    "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED",
+    "ARCHIVE_DEGRADED", "ARCHIVE_FAILED", "DUCKDB_QUERY_FAILED", "DUCKDB_UNAVAILABLE",
+    "RETENTION_BLOCKED", "RETENTION_DEGRADED", "RETENTION_FAILED",
+})
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-observatory", description="Local Codex telemetry observatory")
@@ -166,7 +174,7 @@ def _doctor() -> int:
     checks.append({"name": "config", "status": "ok", "detail": "validated"})
     checks.append({"name": "runtime_paths", "status": "ok", "detail": {key: str(value) for key, value in asdict(paths).items()}})
     checks.append({"name": "admin_key", "status": "ok" if (not config.collectors.openai_admin.enabled or admin_key_present()) else "degraded", "detail": "environment-only credential check"})
-    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED", "ARCHIVE_DEGRADED", "ARCHIVE_FAILED", "DUCKDB_QUERY_FAILED", "DUCKDB_UNAVAILABLE", "RETENTION_DEGRADED"} for item in checks)
+    degraded = any(item["status"] in DEGRADED_DOCTOR_STATUSES for item in checks)
     print(json.dumps({"version": __version__, "status": "degraded" if degraded else "healthy", "checks": checks}, indent=2))
     return 2 if any(item["status"] == "blocking" for item in checks) else (1 if degraded else 0)
 
