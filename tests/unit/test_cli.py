@@ -14,3 +14,15 @@ def test_doctor_is_structured(capsys) -> None:
 def test_health_command_is_machine_readable(tmp_path, capsys) -> None:
     assert main(["health", "--db", str(tmp_path / "observatory.db")]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "healthy"
+
+
+def test_retention_plan_command_is_machine_readable(tmp_path, capsys) -> None:
+    assert main(["retention", "plan", "--db", str(tmp_path / "observatory.db")]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "PLANNED"
+    assert payload["archive_coverage_status"] == "NOT_YET_VERIFIED"
+    assert payload["planned_deletion_count"] == 0
+    assert set(payload["candidates_by_table"]) == {
+        "git_snapshot_correlations", "git_snapshot_paths", "git_snapshots", "correlation_edges",
+        "hook_events", "app_server_messages", "raw_events", "events",
+    }

@@ -396,6 +396,18 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        7,
+        """
+        CREATE TABLE retention_run_candidates (
+            run_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            row_identity TEXT NOT NULL,
+            PRIMARY KEY(run_id,table_name,row_identity),
+            FOREIGN KEY(run_id,table_name) REFERENCES retention_run_tables(run_id,table_name)
+        );
+        """,
+    ),
 )
 
 
