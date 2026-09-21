@@ -112,9 +112,11 @@ def test_unknown_warning_token_usage_and_status_are_preserved(tmp_path: Path) ->
     ingest_notification(connection, "future/event", {"threadId": "thr_1", "secret": "no"})
     ingest_notification(connection, "warning", {"message": "notice"})
     ingest_notification(connection, "thread/tokenUsage/updated", {"threadId": "thr_1", "turnId": "turn_1", "tokenUsage": {"total": {"totalTokens": 3}}})
+    ingest_notification(connection, "thread/tokenUsage/updated", {"threadId": "thr_1", "turnId": "turn_1", "tokenUsage": {"total": {"totalTokens": 4}}})
     assert connection.execute("SELECT known FROM app_server_messages WHERE method='future/event'").fetchone()[0] == 0
     assert connection.execute("SELECT unknown_notification_total FROM app_server_state").fetchone()[0] == 1
     assert connection.execute("SELECT count(*) FROM app_server_token_usage").fetchone()[0] == 1
+    assert '"totalTokens": 4' in connection.execute("SELECT usage_json FROM app_server_token_usage").fetchone()[0]
 
 
 def test_archived_and_unarchived_notifications_update_thread_state(tmp_path: Path) -> None:
