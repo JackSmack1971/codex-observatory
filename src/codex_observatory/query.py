@@ -61,6 +61,11 @@ def _evidence(row: Any, source: str | None = None, fact: str = "observed") -> Ev
     return Evidence(source_class=source or get("source_class") or "UNKNOWN", fact_type=fact, stability=get("stability"), source_event=get("source_event"), correlation_method=get("correlation_method"), correlation_confidence=get("correlation_confidence"))
 
 
+def project_event(row: Any) -> Event:
+    """Return the privacy-bounded event representation shared by HTTP and live delivery."""
+    return Event(event_id=row["event_id"], sequence=row["event_seq"], event_time=row["event_time"], category=row["category"], name=row["name"], status=row["status"], session_id=row["session_id"], thread_id=row["thread_id"], turn_id=row["turn_id"], evidence=_evidence(row))
+
+
 def _int(value: Any) -> int: return int(value or 0)
 
 
@@ -120,7 +125,7 @@ class QueryService:
     def events(self, limit: int, cursor: str | None, start: str | None, end: str | None, repo_id: str | None, source_class: str | None, thread_id: str | None = None) -> Page[Event]:
         time, params = self._time(start, end, "event_time"); extra = time + (" AND source_class=?" if source_class else "") + (" AND thread_id=?" if thread_id else "") + (" AND json_extract(attributes_json, '$.repo_id')=?" if repo_id else ""); params += [source_class] if source_class else []; params += [thread_id] if thread_id else []; params += [repo_id] if repo_id else []
         with self._db() as db: rows = db.execute(f"SELECT * FROM events WHERE 1=1{extra} ORDER BY event_time DESC, event_seq DESC", params).fetchall()
-        return _page([Event(event_id=r["event_id"], sequence=r["event_seq"], event_time=r["event_time"], category=r["category"], name=r["name"], status=r["status"], session_id=r["session_id"], thread_id=r["thread_id"], turn_id=r["turn_id"], evidence=_evidence(r)) for r in rows], cursor, limit)
+        return _page([project_event(r) for r in rows], cursor, limit)
 
     def agents(self, limit: int, cursor: str | None) -> Page[Agent]:
         with self._db() as db: rows = db.execute("SELECT * FROM events WHERE category='agent_lifecycle' ORDER BY event_time DESC, event_seq DESC").fetchall()
