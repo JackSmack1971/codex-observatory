@@ -97,6 +97,27 @@ archives, or expose destructive dashboard controls.
 Operational SQLite failures from the CLI are emitted as structured `FAILED`
 JSON with exit status 2.
 
+## Phase 7.7 integration seal
+
+The final disposable-data gate covers partial archive publication, uncovered
+candidate preservation, manifest and digest reverification, archive-gated
+pruning, historical DuckDB continuity, restart durability, and an idempotent
+zero-delete rerun. It intentionally confirms that raw evidence without a safe
+Phase 5 archive identity and current token-usage projections remain live.
+
+Doctor reports retention independently of archive and hook health. Its state is
+`RETENTION_DISABLED` when policy disables runs, `RETENTION_READY` when no run is
+needed or the latest verified/completed run has no uncovered evidence,
+`RETENTION_BLOCKED` or `RETENTION_FAILED` for those latest durable outcomes, and
+`RETENTION_DEGRADED` for an incomplete run or a successful run that retained
+uncovered candidates. Lifetime counters report runs, dry runs, completed,
+blocked, failed, eligible, verified, deleted, and uncovered rows. Blocked plans
+count as dry runs because they cannot delete data.
+
+Explicit retention checkpoints and `VACUUM` remain deferred. WAL checkpointing
+is already owned by SQLite/runtime operations, while automatic compaction would
+add write-lock and disk-space behavior that this gate does not justify.
+
 <!-- TABLE_CLASSIFICATIONS:START -->
 | Table | Classification |
 | --- | --- |

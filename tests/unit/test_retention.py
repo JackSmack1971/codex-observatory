@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from codex_observatory.config import RetentionConfig
 from codex_observatory.retention import (
     PRUNABLE_HISTORY_ORDER,
     PRUNABLE_HISTORY_TABLES,
@@ -18,6 +19,7 @@ from codex_observatory.retention import (
     RetentionTableClass,
     plan_retention,
     render_table_classification_markdown,
+    retention_health,
 )
 from codex_observatory.sqlite import MIGRATIONS, connect, migrate
 
@@ -343,3 +345,30 @@ def test_plan_rejects_caller_owned_transaction(tmp_path: Path) -> None:
         plan_retention(connection, RetentionConfig())
     assert connection.in_transaction
     connection.rollback()
+
+
+def test_retention_health_states_and_counters(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "health.db")
+    migrate(connection)
+    assert retention_health(connection, RetentionConfig())["status"] == "RETENTION_READY"
+    assert retention_health(connection, RetentionConfig(enabled=False))["status"] == "RETENTION_DISABLED"
+
+    timestamp = "2026-09-21T00:00:00Z"
+    values = ("run", timestamp, timestamp, timestamp, "digest", "{}", "BLOCKED", 2, 1, 1, 1, 0, "proof")
+    connection.execute("INSERT INTO retention_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
+    connection.commit()
+    blocked = retention_health(connection, RetentionConfig())
+    assert blocked["status"] == "RETENTION_BLOCKED"
+    assert blocked["counters"] == {
+        "runs": 1, "dry_runs": 1, "completed": 0, "blocked": 1, "failed": 0,
+        "eligible": 2, "verified": 1, "deleted": 0, "uncovered": 1,
+    }
+    connection.execute("UPDATE retention_runs SET status='FAILED' WHERE run_id='run'")
+    connection.commit()
+    assert retention_health(connection, RetentionConfig())["status"] == "RETENTION_FAILED"
+    connection.execute("UPDATE retention_runs SET status='COMPLETED' WHERE run_id='run'")
+    connection.commit()
+    assert retention_health(connection, RetentionConfig())["status"] == "RETENTION_DEGRADED"
+    connection.execute("UPDATE retention_runs SET uncovered_count=0 WHERE run_id='run'")
+    connection.commit()
+    assert retention_health(connection, RetentionConfig())["status"] == "RETENTION_READY"

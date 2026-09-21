@@ -332,6 +332,46 @@ class RetentionRunV1:
         }
 
 
+def retention_health(connection: Any, config: RetentionConfig) -> dict[str, Any]:
+    """Summarize durable retention audit evidence without running retention."""
+
+    totals = connection.execute(
+        "SELECT count(*) AS runs, "
+        "sum(CASE WHEN status IN ('PLANNED','VERIFIED','BLOCKED') THEN 1 ELSE 0 END) AS dry_runs, "
+        "sum(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed, "
+        "sum(CASE WHEN status='BLOCKED' THEN 1 ELSE 0 END) AS blocked, "
+        "sum(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) AS failed, "
+        "coalesce(sum(candidate_count),0) AS eligible, "
+        "coalesce(sum(covered_count),0) AS verified, "
+        "coalesce(sum(deleted_count),0) AS deleted, "
+        "coalesce(sum(uncovered_count),0) AS uncovered FROM retention_runs"
+    ).fetchone()
+    latest = connection.execute(
+        "SELECT status,uncovered_count,failure_reason,completed_at,started_at "
+        "FROM retention_runs ORDER BY started_at DESC,rowid DESC LIMIT 1"
+    ).fetchone()
+    if not config.enabled:
+        status = "RETENTION_DISABLED"
+    elif latest is None:
+        status = "RETENTION_READY"
+    elif latest["status"] == "FAILED":
+        status = "RETENTION_FAILED"
+    elif latest["status"] == "BLOCKED":
+        status = "RETENTION_BLOCKED"
+    elif latest["status"] in {"PLANNED", "EXECUTING"} or latest["uncovered_count"]:
+        status = "RETENTION_DEGRADED"
+    else:
+        status = "RETENTION_READY"
+    return {
+        "status": status,
+        "counters": {key: int(totals[key] or 0) for key in (
+            "runs", "dry_runs", "completed", "blocked", "failed", "eligible",
+            "verified", "deleted", "uncovered",
+        )},
+        "latest": dict(latest) if latest is not None else None,
+    }
+
+
 class RetentionCandidateChanged(RuntimeError):
     """Raised when the write-locked candidate snapshot differs from its proof."""
 
