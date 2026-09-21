@@ -156,8 +156,8 @@ def test_fresh_and_phase2_to_phase3_migrations_match(tmp_path: Path) -> None:
     phase2.execute("INSERT INTO schema_migrations VALUES(2,'now',?)", (hashlib.sha256(MIGRATIONS[1][1].encode()).hexdigest(),))
     phase2.commit()
     migrate(phase2)
-    assert [row[0] for row in fresh.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5]
-    assert [row[0] for row in phase2.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5]
+    assert [row[0] for row in fresh.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6]
+    assert [row[0] for row in phase2.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6]
     assert {row[0] for row in fresh.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {row[0] for row in phase2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 

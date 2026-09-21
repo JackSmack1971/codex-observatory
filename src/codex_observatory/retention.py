@@ -50,6 +50,8 @@ _TABLE_CLASSIFICATIONS = {
     "archive_watermarks": RetentionTableClass.ARCHIVE_CONTROL,
     "archive_health": RetentionTableClass.ARCHIVE_CONTROL,
     "analytics_health": RetentionTableClass.CONTROL_STATE,
+    "retention_runs": RetentionTableClass.AUDIT,
+    "retention_run_tables": RetentionTableClass.AUDIT,
 }
 
 # The future planner must consume this immutable, authoritative registry.

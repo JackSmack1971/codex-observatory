@@ -42,6 +42,8 @@ audit state and is included.
 | `archive_watermarks` | `ARCHIVE_CONTROL` |
 | `archive_health` | `ARCHIVE_CONTROL` |
 | `analytics_health` | `CONTROL_STATE` |
+| `retention_runs` | `AUDIT` |
+| `retention_run_tables` | `AUDIT` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 
 `app_server_token_usage` is updated in place for a `(thread_id, turn_id)` and
