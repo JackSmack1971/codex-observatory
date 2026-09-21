@@ -35,6 +35,41 @@ primary keys are recorded as canonical JSON objects rather than delimiter-joined
 text. The optional `--config` argument accepts a complete observatory TOML file,
 including a `[retention]` table as shown by `config/retention.example.toml`.
 
+## Phase 7.4 archive-coverage proof
+
+Planning now proves archive coverage for each eligible candidate without
+deleting live data. A candidate is `COVERED` only when its stable identity is
+read from a Phase 5 Parquet file in a `PUBLISHED` batch after re-verifying the
+registered manifest path and digest, manifest dataset and canonical schema,
+registered file metadata, safe in-root Parquet path, file SHA-256, readable
+Parquet schema, row count, and identity column. A published registry row by
+itself is never coverage.
+
+Verification also requires the manifest and registry to agree on the complete
+unique file-ID set, file sizes, file and row totals, and batch aggregates. The
+reader streams identities in bounded chunks and retains only identities that
+are candidates in the current plan. If no archive root is configured, the
+proof has not run and the plan is `BLOCKED`, including when there are no
+candidates.
+
+Canonical events map by `event_id`, and Git snapshots map by
+`snapshot_observation_id`. Tables without evidence carrying a safe Phase 5
+identity are `UNCOVERED`; the planner does not infer a relationship. A missing
+identity in otherwise valid evidence is also `UNCOVERED`. If relevant
+published evidence cannot be verified, an otherwise unmatched candidate is
+`BLOCKED`. Covered identities remain usable even when a separate batch is
+invalid.
+
+Only `COVERED` candidates enter `planned_delete_count` (`would_delete` in CLI
+output), and that exact decision is stored on each candidate as
+`planned_delete`. `UNCOVERED` and `BLOCKED` candidates never do. A covered Git
+snapshot with path or correlation children is also excluded because Phase 5
+does not preserve those child identities and the SQLite foreign keys prohibit
+deleting their parent. A plan is `VERIFIED`
+only after this proof has run and its proposed set consists solely of covered
+rows; evidence failures make the plan `BLOCKED`. `VERIFIED` remains a dry-run
+state: Phase 7.4 contains no `DELETE`, hot/cold query change, or `VACUUM`.
+
 <!-- TABLE_CLASSIFICATIONS:START -->
 | Table | Classification |
 | --- | --- |
