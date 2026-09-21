@@ -52,11 +52,136 @@ def test_empty_database_no_cursor_and_heartbeat(
         TestClient(create_app(tmp_path / "empty.db")) as client,
         client.websocket_connect("/api/v1/live") as socket,
     ):
+        socket.send_json({"type": "subscribe"})
+        assert socket.receive_json() == {
+            "type": "subscribed",
+            "schema": "codex.observatory.live.v1",
+            "sequence": 0,
+        }
         assert socket.receive_json() == {
             "type": "heartbeat",
             "schema": "codex.observatory.live.v1",
             "sequence": 0,
         }
+
+
+def test_documented_subscribe_and_payload_contract(tmp_path: Path) -> None:
+    db = tmp_path / "subscribe.db"
+    migrate(connect(db))
+    sequence = insert_event(db, "event")
+    with TestClient(create_app(db)) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json({"type": "subscribe", "resume_from_sequence": None, "filters": {}})
+        assert socket.receive_json() == {
+            "type": "subscribed",
+            "schema": "codex.observatory.live.v1",
+            "sequence": sequence,
+        }
+        insert_event(db, "next")
+        message = socket.receive_json()
+    assert message["type"] == "event"
+    assert message["sequence"] == sequence + 1
+    assert "payload" in message
+    assert "event" not in message
+    assert message["payload"]["sequence"] == sequence + 1
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"type": "subscribe", "resume_from_sequence": "1"},
+        {"type": "subscribe", "filters": {"unknown": True}},
+        {"type": "subscribe", "filters": {"categories": [1]}},
+        {"type": "ping"},
+    ],
+)
+def test_malformed_or_unsupported_subscribe_is_rejected(tmp_path: Path, frame: dict[str, object]) -> None:
+    with TestClient(create_app(tmp_path / "invalid.db")) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json(frame)
+        message = socket.receive_json()
+    assert message["type"] == "error"
+
+
+def test_replay_interior_gap_requires_reset(tmp_path: Path) -> None:
+    db = tmp_path / "gap.db"
+    migrate(connect(db))
+    sequences = [insert_event(db, str(number)) for number in range(3)]
+    with connect(db) as connection:
+        connection.execute("DELETE FROM events WHERE event_seq=?", (sequences[1],))
+        connection.commit()
+    with TestClient(create_app(db)) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json({"type": "subscribe", "resume_from_sequence": sequences[0]})
+        assert socket.receive_json()["type"] == "reset_required"
+
+
+def test_multiple_replay_gaps_and_gap_after_successful_replay_require_reset(tmp_path: Path) -> None:
+    db = tmp_path / "multiple-gaps.db"
+    migrate(connect(db))
+    sequences = [insert_event(db, str(number)) for number in range(5)]
+    with connect(db) as connection:
+        connection.execute("DELETE FROM events WHERE event_seq IN (?,?)", (sequences[1], sequences[3]))
+        connection.commit()
+    with TestClient(create_app(db)) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json({"type": "subscribe", "resume_from_sequence": sequences[0]})
+        assert socket.receive_json()["type"] == "reset_required"
+
+    db = tmp_path / "gap-after-replay.db"
+    migrate(connect(db))
+    sequences = [insert_event(db, str(number)) for number in range(3)]
+    with TestClient(create_app(db)) as client:
+        with client.websocket_connect("/api/v1/live") as socket:
+            socket.send_json({"type": "subscribe", "resume_from_sequence": sequences[0]})
+            assert [socket.receive_json()["sequence"], socket.receive_json()["sequence"]] == sequences[1:]
+            assert socket.receive_json()["type"] == "subscribed"
+        with connect(db) as connection:
+            connection.execute("DELETE FROM events WHERE event_seq=?", (sequences[1],))
+            connection.commit()
+        with client.websocket_connect("/api/v1/live") as socket:
+            socket.send_json({"type": "subscribe", "resume_from_sequence": sequences[0]})
+            assert socket.receive_json()["type"] == "reset_required"
+
+
+def test_subscribed_baseline_covers_handshake_insert(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "baseline-race.db"
+    migrate(connect(db))
+    original = LiveBroker.subscribe
+    inserted: list[int] = []
+
+    def subscribe_during_handshake(broker: LiveBroker):
+        queue = original(broker)
+        inserted.append(insert_event(db, "during-handshake"))
+        return queue
+
+    monkeypatch.setattr(LiveBroker, "subscribe", subscribe_during_handshake)
+    with TestClient(create_app(db)) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json({"type": "subscribe"})
+        assert socket.receive_json() == {
+            "type": "subscribed",
+            "schema": "codex.observatory.live.v1",
+            "sequence": inserted[0],
+        }
+
+
+def test_filter_applies_to_replay_and_live(tmp_path: Path) -> None:
+    db = tmp_path / "filters.db"
+    migrate(connect(db))
+    first = insert_event(db, "first")
+    with connect(db) as connection:
+        connection.execute("UPDATE events SET category='tool_call', session_id='s1' WHERE event_seq=?", (first,))
+        connection.commit()
+    second = insert_event(db, "second")
+    with connect(db) as connection:
+        connection.execute("UPDATE events SET category='turn', session_id='s1' WHERE event_seq=?", (second,))
+        connection.commit()
+    with TestClient(create_app(db)) as client, client.websocket_connect("/api/v1/live") as socket:
+        socket.send_json({"type": "subscribe", "resume_from_sequence": 0, "filters": {"categories": ["tool"]}})
+        assert socket.receive_json()["sequence"] == first
+        assert socket.receive_json()["type"] == "subscribed"
+        third = insert_event(db, "third")
+        with connect(db) as connection:
+            connection.execute("UPDATE events SET category='tool_result' WHERE event_seq=?", (third,))
+            connection.commit()
+        message = socket.receive_json()
+    assert message["sequence"] == third
 
 
 def test_replay_is_ordered_bounded_and_privacy_safe(tmp_path: Path) -> None:
@@ -93,6 +218,10 @@ def test_live_fanout_two_clients_disconnect_and_reconnect(tmp_path: Path) -> Non
             client.websocket_connect("/api/v1/live") as first,
             client.websocket_connect("/api/v1/live") as second,
         ):
+            first.send_json({"type": "subscribe"})
+            second.send_json({"type": "subscribe"})
+            assert first.receive_json()["type"] == "subscribed"
+            assert second.receive_json()["type"] == "subscribed"
             sequence_a = insert_event(db, "a")
             assert first.receive_json()["sequence"] == sequence_a
             assert second.receive_json()["sequence"] == sequence_a

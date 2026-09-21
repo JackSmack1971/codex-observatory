@@ -1572,6 +1572,10 @@ Client subscribe message:
 }
 ```
 
+The documented subscribe frame is the normative protocol. The former
+`last_sequence` query parameter remains accepted only as deprecated backward
+compatibility for pre-v1 clients; new clients must send `subscribe`.
+
 Server event:
 
 ```json
