@@ -1,5 +1,12 @@
 # Codex Local Telemetry Observatory
 
+Phase 5 adds an immutable, read-only historical archive. SQLite remains the
+live evidence store; `archive run` exports canonical `events`, app-server
+`token_usage`, and Git `git_snapshots` to explicitly typed, Zstandard-compressed
+Parquet files under `year=YYYY/month=MM` Hive partitions. Published files are
+trusted only when registered in a verified immutable manifest. DuckDB queries
+the registered files in process; it is not a second mutable source of truth.
+
 Phase 4 adds read-only Git state evidence on top of the existing observatory.
 Git identity, worktree state, HEAD, status paths, diff statistics, and health
 are persisted in SQLite without storing full diffs. See
@@ -30,6 +37,15 @@ Explicit Git capture and query:
 ```text
 uv run codex-observatory git-capture --cwd .
 uv run codex-observatory git-query
+```
+
+Archive and fixed analytics queries:
+
+```text
+uv run codex-observatory archive run
+uv run codex-observatory archive verify
+uv run codex-observatory analytics event-count
+uv run codex-observatory analytics events-by-source
 ```
 
 See [the Phase 1 OTLP notes](docs/phase-1-otlp.md) for protocol behavior,

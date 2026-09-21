@@ -44,7 +44,23 @@ def _parser() -> argparse.ArgumentParser:
     configure = commands.add_parser("configure-codex")
     configure.add_argument("action", choices=("--check", "--print", "--apply"))
     archive = commands.add_parser("archive")
-    archive.add_subparsers(dest="archive_command").add_parser("run")
+    archive_commands = archive.add_subparsers(dest="archive_command")
+    archive_run = archive_commands.add_parser("run")
+    archive_run.add_argument("--db", type=Path, default=None)
+    archive_run.add_argument("--archive-root", type=Path, default=None)
+    archive_run.add_argument("--dataset", choices=("events", "token_usage", "git_snapshots", "all"), default="all")
+    archive_verify = archive_commands.add_parser("verify")
+    archive_verify.add_argument("--db", type=Path, default=None)
+    archive_verify.add_argument("--archive-root", type=Path, default=None)
+    archive_health = archive_commands.add_parser("health")
+    archive_health.add_argument("--db", type=Path, default=None)
+    archive_health.add_argument("--archive-root", type=Path, default=None)
+    analytics = commands.add_parser("analytics")
+    analytics.add_argument("kind", choices=("event-count", "events-by-source", "events-by-category", "events-by-repository", "token-total", "tool-calls"))
+    analytics.add_argument("--db", type=Path, default=None)
+    analytics.add_argument("--archive-root", type=Path, default=None)
+    analytics.add_argument("--start", default=None)
+    analytics.add_argument("--end", default=None)
     retention = commands.add_parser("retention")
     retention.add_subparsers(dest="retention_command").add_parser("run")
     schema = commands.add_parser("schema")
@@ -84,7 +100,6 @@ def _doctor() -> int:
         {"name": "hooks", "status": "HOOKS_CONFIGURED_NOT_OBSERVED" if hook_configured else "HOOKS_DISABLED", "detail": "observational command hooks"},
         {"name": "sqlite", "status": "ok", "detail": "WAL migration-backed live store available"},
         {"name": "app_server_schema", "status": "not_configured", "detail": "no compatibility registry populated"},
-        {"name": "parquet", "status": "not_implemented", "detail": "archive begins in Phase 8"},
         {"name": "clock", "status": "ok", "detail": "system clock readable"},
     ])
     from .sqlite import connect, migrate
@@ -119,12 +134,24 @@ def _doctor() -> int:
         if git_row:
             git_status = git_row["status"] if git_status == "GIT_REPOSITORY_DETECTED" else git_status
         checks.append({"name": "git", "status": git_status, "detail": git_detail, "health": dict(git_row) if git_row else {"status": "disabled"}})
+        from .archive import archive_health, verify_archive
+        archive_root = config.storage.parquet_root or paths.parquet_root
+        verification = verify_archive(app_db, archive_root)
+        archive_status = verification["status"].upper()
+        checks.append({"name": "archive", "status": f"ARCHIVE_{archive_status}", "detail": archive_health(app_db, archive_root)})
+        try:
+            import duckdb
+            checks.append({"name": "duckdb", "status": "DUCKDB_AVAILABLE", "detail": duckdb.__version__})
+            duckdb_health = app_db.execute("SELECT * FROM analytics_health WHERE collector='duckdb'").fetchone()
+            checks.append({"name": "duckdb_query", "status": "DUCKDB_QUERY_HEALTHY" if not duckdb_health or duckdb_health["status"] == "healthy" else "DUCKDB_QUERY_FAILED", "detail": dict(duckdb_health) if duckdb_health else "no query run"})
+        except ImportError as exc:
+            checks.extend([{"name": "duckdb", "status": "DUCKDB_UNAVAILABLE", "detail": str(exc)}, {"name": "duckdb_query", "status": "DUCKDB_QUERY_FAILED", "detail": "DuckDB is unavailable"}])
     finally:
         app_db.close()
     checks.append({"name": "config", "status": "ok", "detail": "validated"})
     checks.append({"name": "runtime_paths", "status": "ok", "detail": {key: str(value) for key, value in asdict(paths).items()}})
     checks.append({"name": "admin_key", "status": "ok" if (not config.collectors.openai_admin.enabled or admin_key_present()) else "degraded", "detail": "environment-only credential check"})
-    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED"} for item in checks)
+    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED", "ARCHIVE_DEGRADED", "ARCHIVE_FAILED", "DUCKDB_QUERY_FAILED", "DUCKDB_UNAVAILABLE"} for item in checks)
     print(json.dumps({"version": __version__, "status": "degraded" if degraded else "healthy", "checks": checks}, indent=2))
     return 2 if any(item["status"] == "blocking" for item in checks) else (1 if degraded else 0)
 
@@ -172,6 +199,53 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         finally:
             connection.close()
+    if args.command == "archive":
+        from .archive import archive_health, export_dataset, verify_archive
+        from .sqlite import connect, migrate
+        db = args.db or resolve_paths().sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection)
+            root = args.archive_root or load_config().storage.parquet_root or resolve_paths().parquet_root
+            if args.archive_command == "run":
+                datasets = ("events", "token_usage", "git_snapshots") if args.dataset == "all" else (args.dataset,)
+                print(json.dumps([asdict(export_dataset(connection, root, dataset)) for dataset in datasets], indent=2))
+            elif args.archive_command == "verify":
+                print(json.dumps(verify_archive(connection, root), indent=2))
+            elif args.archive_command == "health":
+                print(json.dumps(archive_health(connection, root), indent=2))
+            else:
+                print(json.dumps({"status": "NOT_IMPLEMENTED", "command": "archive"}))
+                return 1
+            return 0
+        finally:
+            connection.close()
+    if args.command == "analytics":
+        from .analytics import AnalyticsService
+        from .sqlite import connect, migrate
+        paths = resolve_paths()
+        db = args.db or paths.sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection)
+            root = args.archive_root or load_config().storage.parquet_root or paths.parquet_root
+            service = AnalyticsService(connection, root)
+            if args.kind == "event-count":
+                output: object = {"value": service.event_count(args.start, args.end)}
+            elif args.kind == "events-by-source":
+                output = service.events_by("source_class", args.start, args.end)
+            elif args.kind == "events-by-category":
+                output = service.events_by("category", args.start, args.end)
+            elif args.kind == "events-by-repository":
+                output = service.events_by("repo_id", args.start, args.end)
+            elif args.kind == "token-total":
+                output = {"value": service.token_total(args.start, args.end)}
+            else:
+                output = service.tool_calls(args.start, args.end)
+            print(json.dumps(output, indent=2, default=str))
+            return 0
+        finally:
+            connection.close()
     if args.command in {"health", "query", "git-query"}:
         from .sqlite import connect, migrate
 
@@ -180,12 +254,16 @@ def main(argv: list[str] | None = None) -> int:
         migrate(connection)
         if args.command == "health":
             row = connection.execute("SELECT * FROM collector_health WHERE collector='otlp'").fetchone()
-            result = dict(row) if row else {"collector": "otlp", "status": "healthy"}
+            health_result: dict[str, object] = dict(row) if row else {"collector": "otlp", "status": "healthy"}
             hook_row = connection.execute("SELECT * FROM hook_source_state WHERE source_instance='local-default'").fetchone()
-            result["hooks"] = dict(hook_row) if hook_row else {"status": "disabled"}
+            health_result["hooks"] = dict(hook_row) if hook_row else {"status": "disabled"}
             git_row = connection.execute("SELECT * FROM git_health WHERE collector='git'").fetchone()
-            result["git"] = dict(git_row) if git_row else {"status": "disabled", "repositories_discovered_total": 0, "snapshots_total": 0}
-            print(json.dumps(result, indent=2))
+            health_result["git"] = dict(git_row) if git_row else {"status": "disabled", "repositories_discovered_total": 0, "snapshots_total": 0}
+            archive_row = connection.execute("SELECT * FROM archive_health WHERE collector='archive'").fetchone()
+            analytics_row = connection.execute("SELECT * FROM analytics_health WHERE collector='duckdb'").fetchone()
+            health_result["archive"] = dict(archive_row) if archive_row else {"status": "empty"}
+            health_result["duckdb"] = dict(analytics_row) if analytics_row else {"status": "available", "queries_total": 0}
+            print(json.dumps(health_result, indent=2))
         elif args.command == "git-query":
             rows = connection.execute("SELECT * FROM git_snapshots ORDER BY captured_at DESC LIMIT ?", (max(1, min(args.limit, 1000)),)).fetchall()
             print(json.dumps([dict(row) for row in rows], indent=2))

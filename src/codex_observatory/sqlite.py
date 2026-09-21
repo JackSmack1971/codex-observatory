@@ -297,6 +297,73 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        5,
+        """
+        CREATE TABLE archive_batches (
+            batch_id TEXT PRIMARY KEY,
+            dataset TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            selection_start TEXT,
+            selection_end TEXT,
+            source_start INTEGER,
+            source_end INTEGER,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            file_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            manifest_path TEXT UNIQUE,
+            manifest_digest TEXT,
+            last_error TEXT
+        );
+        CREATE INDEX idx_archive_batches_dataset_status ON archive_batches(dataset,status);
+        CREATE TABLE archive_files (
+            file_id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            row_count INTEGER NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            min_event_time TEXT,
+            max_event_time TEXT,
+            schema_version TEXT NOT NULL,
+            FOREIGN KEY(batch_id) REFERENCES archive_batches(batch_id)
+        );
+        CREATE TABLE archive_watermarks (
+            dataset TEXT PRIMARY KEY,
+            source_table TEXT NOT NULL,
+            last_watermark INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE archive_health (
+            collector TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            batches_started_total INTEGER NOT NULL DEFAULT 0,
+            batches_published_total INTEGER NOT NULL DEFAULT 0,
+            batches_failed_total INTEGER NOT NULL DEFAULT 0,
+            rows_archived_total INTEGER NOT NULL DEFAULT 0,
+            files_published_total INTEGER NOT NULL DEFAULT 0,
+            verification_failures_total INTEGER NOT NULL DEFAULT 0,
+            small_files_total INTEGER NOT NULL DEFAULT 0,
+            last_export TEXT,
+            last_success TEXT,
+            last_error TEXT,
+            pending_rows INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE analytics_health (
+            collector TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            queries_total INTEGER NOT NULL DEFAULT 0,
+            query_failures_total INTEGER NOT NULL DEFAULT 0,
+            last_query TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 )
 
 
@@ -317,18 +384,23 @@ def connect(path: Path) -> sqlite3.Connection:
 
 def migrate(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, checksum TEXT NOT NULL UNIQUE)")
-    for version, sql in MIGRATIONS:
-        checksum = hashlib.sha256(sql.encode()).hexdigest()
-        row = connection.execute("SELECT checksum FROM schema_migrations WHERE version = ?", (version,)).fetchone()
-        if row:
-            if row[0] != checksum:
-                raise RuntimeError(f"migration checksum mismatch for version {version}")
-            continue
-        with connection:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for version, sql in sorted(MIGRATIONS):
+            checksum = hashlib.sha256(sql.encode()).hexdigest()
+            row = connection.execute("SELECT checksum FROM schema_migrations WHERE version = ?", (version,)).fetchone()
+            if row:
+                if row[0] != checksum:
+                    raise RuntimeError(f"migration checksum mismatch for version {version}")
+                continue
             for statement in (part.strip() for part in sql.split(";")):
                 if statement:
                     connection.execute(statement)
             connection.execute("INSERT INTO schema_migrations(version, applied_at, checksum) VALUES (?, ?, ?)", (version, utc_now(), checksum))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def _health_status(received: int, rejected: int, last_error: str | None) -> str:
