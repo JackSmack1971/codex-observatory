@@ -9,6 +9,7 @@ The observatory is read-only with respect to Codex execution. No collector or da
 | Codex OTel | logs, metrics, traces | asynchronous telemetry | OTLP/HTTP receiver implemented |
 | Lifecycle hooks | rich local lifecycle facts | hook payload plus receipt metadata | not implemented |
 | App Server | persisted thread reconciliation and controlled notification evidence | versioned JSON/TS schema | Phase 2 implemented |
+| Codex Hooks | lifecycle command-hook observation | current Codex Hooks JSON stdin contract | Phase 3 implemented; enrichment only |
 | Git | repository snapshots | command output at a repository cwd | not implemented |
 | OpenAI Admin API | optional aggregate usage/costs | remote admin data | not implemented |
 

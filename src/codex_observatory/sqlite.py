@@ -158,6 +158,60 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE hook_events (
+            ingest_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            hook_event_name TEXT NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            tool_use_id TEXT,
+            agent_id TEXT,
+            agent_type TEXT,
+            redaction_count INTEGER NOT NULL DEFAULT 0,
+            normalized INTEGER NOT NULL DEFAULT 1,
+            received_at TEXT NOT NULL,
+            FOREIGN KEY(ingest_id) REFERENCES raw_events(ingest_id),
+            FOREIGN KEY(event_id) REFERENCES events(event_id)
+        );
+        CREATE INDEX idx_hook_events_session ON hook_events(session_id, received_at);
+        CREATE INDEX idx_hook_events_turn ON hook_events(turn_id, received_at);
+        CREATE INDEX idx_hook_events_tool ON hook_events(tool_use_id, received_at);
+        CREATE INDEX idx_hook_events_agent ON hook_events(agent_id, received_at);
+        CREATE TABLE hook_source_state (
+            source_instance TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            received_total INTEGER NOT NULL DEFAULT 0,
+            normalized_total INTEGER NOT NULL DEFAULT 0,
+            unknown_event_total INTEGER NOT NULL DEFAULT 0,
+            privacy_redaction_total INTEGER NOT NULL DEFAULT 0,
+            duplicate_total INTEGER NOT NULL DEFAULT 0,
+            correlation_total INTEGER NOT NULL DEFAULT 0,
+            correlation_unresolved_total INTEGER NOT NULL DEFAULT 0,
+            ingest_failure_total INTEGER NOT NULL DEFAULT 0,
+            delivery_failure_total INTEGER NOT NULL DEFAULT 0,
+            last_event TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE correlation_edges (
+            edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL,
+            related_event_id TEXT NOT NULL,
+            correlation_method TEXT NOT NULL,
+            correlation_confidence TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(event_id, related_event_id, correlation_method),
+            FOREIGN KEY(event_id) REFERENCES events(event_id),
+            FOREIGN KEY(related_event_id) REFERENCES events(event_id)
+        );
+        CREATE INDEX idx_correlation_event ON correlation_edges(event_id);
+        CREATE INDEX idx_correlation_related ON correlation_edges(related_event_id);
+        """,
+    ),
 )
 
 
