@@ -346,31 +346,53 @@ def retention_health(connection: Any, *, enabled: bool) -> dict[str, Any]:
         ).fetchall()
     }
     totals = connection.execute(
-        "SELECT count(*) AS runs_total,coalesce(sum(deleted_count),0) AS rows_deleted_total "
+        "SELECT count(*) AS runs_total,"
+        "coalesce(sum(candidate_count),0) AS rows_eligible_total,"
+        "coalesce(sum(covered_count),0) AS rows_verified_total,"
+        "coalesce(sum(uncovered_count),0) AS rows_uncovered_total,"
+        "coalesce(sum(deleted_count),0) AS rows_deleted_total "
         "FROM retention_runs"
     ).fetchone()
     latest = connection.execute(
         "SELECT run_id,status,started_at,completed_at,deleted_count,failure_reason "
-        "FROM retention_runs ORDER BY started_at DESC,run_id DESC LIMIT 1"
+        "FROM retention_runs ORDER BY rowid DESC LIMIT 1"
+    ).fetchone()
+    last_success = connection.execute(
+        "SELECT completed_at FROM retention_runs WHERE status='COMPLETED' "
+        "ORDER BY completed_at DESC,run_id DESC LIMIT 1"
+    ).fetchone()
+    last_error = connection.execute(
+        "SELECT failure_reason FROM retention_runs WHERE failure_reason IS NOT NULL "
+        "ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
     if not enabled:
         status = "RETENTION_DISABLED"
     elif latest is None:
-        status = "RETENTION_NOT_RUN"
-    elif latest["status"] == "COMPLETED":
-        status = "RETENTION_HEALTHY"
-    elif latest["status"] in {"BLOCKED", "FAILED"}:
+        status = "RETENTION_READY"
+    elif latest["status"] == "BLOCKED":
+        status = "RETENTION_BLOCKED"
+    elif latest["status"] == "FAILED":
+        status = "RETENTION_FAILED"
+    elif latest["status"] != "COMPLETED" or connection.execute(
+        "SELECT uncovered_count FROM retention_runs WHERE run_id=?", (latest["run_id"],),
+    ).fetchone()[0]:
         status = "RETENTION_DEGRADED"
     else:
-        status = "RETENTION_PENDING"
+        status = "RETENTION_READY"
     return {
         "status": status,
         "runs_total": int(totals["runs_total"]),
+        "dry_runs_total": counts.get("PLANNED", 0) + counts.get("VERIFIED", 0),
         "completed_runs_total": counts.get("COMPLETED", 0),
         "blocked_runs_total": counts.get("BLOCKED", 0),
         "failed_runs_total": counts.get("FAILED", 0),
+        "rows_eligible_total": int(totals["rows_eligible_total"]),
+        "rows_verified_total": int(totals["rows_verified_total"]),
         "rows_deleted_total": int(totals["rows_deleted_total"]),
+        "rows_uncovered_total": int(totals["rows_uncovered_total"]),
         "last_run": dict(latest) if latest is not None else None,
+        "last_success": last_success[0] if last_success is not None else None,
+        "last_error": last_error[0] if last_error is not None else None,
     }
 
 

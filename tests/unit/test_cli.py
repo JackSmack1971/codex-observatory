@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from codex_observatory.cli import main
+from codex_observatory.cli import DEGRADED_DOCTOR_STATUSES, main
 
 
 def test_doctor_is_structured(capsys) -> None:
@@ -11,6 +11,15 @@ def test_doctor_is_structured(capsys) -> None:
     assert result in (1, 2)
     assert payload["status"] == "degraded"
     assert isinstance(payload["checks"], list)
+
+
+def test_retention_failures_degrade_doctor() -> None:
+    assert {"RETENTION_BLOCKED", "RETENTION_DEGRADED", "RETENTION_FAILED"} <= (
+        DEGRADED_DOCTOR_STATUSES
+    )
+    assert {"RETENTION_DISABLED", "RETENTION_READY"}.isdisjoint(
+        DEGRADED_DOCTOR_STATUSES
+    )
 
 
 def test_health_command_is_machine_readable(tmp_path, capsys) -> None:
