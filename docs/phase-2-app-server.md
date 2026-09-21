@@ -38,6 +38,18 @@ The gate uses a temporary database and does not change Codex configuration or
 issue control/mutation methods. It reports stored/loaded threads and whether
 persisted turns/items were available for observation.
 
+Run the separate controlled live gate when a real turn lifecycle is required:
+
+```text
+uv run python scripts/app_server_live_gate.py --codex C:\Users\<user>\AppData\Roaming\npm\codex.cmd
+```
+
+This driver is deliberately outside the production adapter. It uses
+`thread/start` and `turn/start` only to create one temporary, no-tool test
+thread, persists its live notifications through the Phase 2 mapper, and then
+uses `thread/delete` to remove the thread it created. The production adapter
+allowlist still rejects all three methods.
+
 Authoritative documentation consulted on 2026-09-20:
 
 - [Codex App Server](https://developers.openai.com/codex/app-server)
