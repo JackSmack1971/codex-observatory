@@ -336,6 +336,44 @@ class RetentionCandidateChanged(RuntimeError):
     """Raised when the write-locked candidate snapshot differs from its proof."""
 
 
+def retention_health(connection: Any, *, enabled: bool) -> dict[str, Any]:
+    """Summarize retention independently from archive and collector health."""
+
+    counts = {
+        row["status"]: int(row["runs"])
+        for row in connection.execute(
+            "SELECT status,count(*) AS runs FROM retention_runs GROUP BY status"
+        ).fetchall()
+    }
+    totals = connection.execute(
+        "SELECT count(*) AS runs_total,coalesce(sum(deleted_count),0) AS rows_deleted_total "
+        "FROM retention_runs"
+    ).fetchone()
+    latest = connection.execute(
+        "SELECT run_id,status,started_at,completed_at,deleted_count,failure_reason "
+        "FROM retention_runs ORDER BY started_at DESC,run_id DESC LIMIT 1"
+    ).fetchone()
+    if not enabled:
+        status = "RETENTION_DISABLED"
+    elif latest is None:
+        status = "RETENTION_NOT_RUN"
+    elif latest["status"] == "COMPLETED":
+        status = "RETENTION_HEALTHY"
+    elif latest["status"] in {"BLOCKED", "FAILED"}:
+        status = "RETENTION_DEGRADED"
+    else:
+        status = "RETENTION_PENDING"
+    return {
+        "status": status,
+        "runs_total": int(totals["runs_total"]),
+        "completed_runs_total": counts.get("COMPLETED", 0),
+        "blocked_runs_total": counts.get("BLOCKED", 0),
+        "failed_runs_total": counts.get("FAILED", 0),
+        "rows_deleted_total": int(totals["rows_deleted_total"]),
+        "last_run": dict(latest) if latest is not None else None,
+    }
+
+
 def _eligible_candidates(
     connection: Any, config: RetentionConfig, cutoffs: Mapping[str, str],
 ) -> tuple[dict[str, tuple[str, ...]], list[RetentionDiagnosticV1], int]:

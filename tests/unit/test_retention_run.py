@@ -10,7 +10,7 @@ import pytest
 import codex_observatory.retention as retention_module
 from codex_observatory.archive import export_dataset
 from codex_observatory.config import RetentionConfig
-from codex_observatory.retention import run_retention
+from codex_observatory.retention import retention_health, run_retention
 from codex_observatory.sqlite import connect, migrate
 
 NOW = datetime(2026, 9, 21, tzinfo=UTC)
@@ -58,6 +58,37 @@ def test_mixed_run_deletes_only_covered_and_audits_counts(tmp_path: Path) -> Non
 
     rerun = run_retention(connection, RetentionConfig(), archive_root=root, evaluation_time=NOW)
     assert (rerun.status, rerun.deleted_count) == ("COMPLETED", 0)
+
+    assert retention_health(connection, enabled=True) == {
+        "status": "RETENTION_HEALTHY",
+        "runs_total": 2,
+        "completed_runs_total": 2,
+        "blocked_runs_total": 0,
+        "failed_runs_total": 0,
+        "rows_deleted_total": 1,
+        "last_run": dict(connection.execute(
+            "SELECT run_id,status,started_at,completed_at,deleted_count,failure_reason "
+            "FROM retention_runs WHERE run_id=?", (rerun.run_id,),
+        ).fetchone()),
+    }
+
+
+def test_retention_health_has_independent_lifecycle_states(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "health.sqlite")
+    migrate(connection)
+
+    assert retention_health(connection, enabled=False)["status"] == "RETENTION_DISABLED"
+    assert retention_health(connection, enabled=True)["status"] == "RETENTION_NOT_RUN"
+    connection.execute(
+        "INSERT INTO retention_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("failed", OLD, OLD, OLD, "sha256:test", "{}", "FAILED", 0, 0, 0, 0, 0, "test"),
+    )
+    connection.commit()
+
+    health = retention_health(connection, enabled=True)
+    assert health["status"] == "RETENTION_DEGRADED"
+    assert (health["runs_total"], health["failed_runs_total"], health["rows_deleted_total"]) == (1, 1, 0)
+    connection.close()
 
 
 def test_execution_failure_rolls_back_all_deletes(tmp_path: Path) -> None:

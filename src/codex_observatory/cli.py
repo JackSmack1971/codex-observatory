@@ -147,6 +147,13 @@ def _doctor() -> int:
         verification = verify_archive(app_db, archive_root)
         archive_status = verification["status"].upper()
         checks.append({"name": "archive", "status": f"ARCHIVE_{archive_status}", "detail": archive_health(app_db, archive_root)})
+        from .retention import retention_health
+        retention_detail = retention_health(app_db, enabled=config.retention.enabled)
+        checks.append({
+            "name": "retention",
+            "status": retention_detail["status"],
+            "detail": retention_detail,
+        })
         try:
             import duckdb
             checks.append({"name": "duckdb", "status": "DUCKDB_AVAILABLE", "detail": duckdb.__version__})
@@ -159,7 +166,7 @@ def _doctor() -> int:
     checks.append({"name": "config", "status": "ok", "detail": "validated"})
     checks.append({"name": "runtime_paths", "status": "ok", "detail": {key: str(value) for key, value in asdict(paths).items()}})
     checks.append({"name": "admin_key", "status": "ok" if (not config.collectors.openai_admin.enabled or admin_key_present()) else "degraded", "detail": "environment-only credential check"})
-    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED", "ARCHIVE_DEGRADED", "ARCHIVE_FAILED", "DUCKDB_QUERY_FAILED", "DUCKDB_UNAVAILABLE"} for item in checks)
+    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED", "ARCHIVE_DEGRADED", "ARCHIVE_FAILED", "DUCKDB_QUERY_FAILED", "DUCKDB_UNAVAILABLE", "RETENTION_DEGRADED"} for item in checks)
     print(json.dumps({"version": __version__, "status": "degraded" if degraded else "healthy", "checks": checks}, indent=2))
     return 2 if any(item["status"] == "blocking" for item in checks) else (1 if degraded else 0)
 
