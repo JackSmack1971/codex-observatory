@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
+frontend/node_modules/
+frontend/dist/
+src/codex_observatory/static/*
+!src/codex_observatory/static/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+*.parquet
+.env
