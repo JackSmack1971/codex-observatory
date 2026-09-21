@@ -75,7 +75,7 @@ def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
         for row in phase6.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )
-    ] == [1, 2, 3, 4, 5, 6, 7]
+    ] == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
 def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
@@ -241,7 +241,8 @@ def test_plan_is_deterministic_dry_run_across_tables_and_persists(tmp_path: Path
     assert len(plan.candidates_by_table["events"]) == 1
     assert plan.eligible_count == 3
     assert plan.ineligible_count == 3
-    assert plan.archive_coverage_status == "NOT_YET_VERIFIED"
+    assert plan.archive_coverage_status == "UNCOVERED"
+    assert plan.uncovered_count == 3
     assert plan.planned_deletion_count == 0
     assert not any(statement.lstrip().upper().startswith("DELETE") for statement in statements)
     after = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in before}
@@ -251,10 +252,10 @@ def test_plan_is_deterministic_dry_run_across_tables_and_persists(tmp_path: Path
 
     reopened = connect(path)
     migrate(reopened)
-    assert reopened.execute("SELECT status FROM retention_runs WHERE run_id=?", (run_id,)).fetchone()[0] == "PLANNED"
+    assert reopened.execute("SELECT status FROM retention_runs WHERE run_id=?", (run_id,)).fetchone()[0] == "VERIFIED"
     assert [row[0] for row in reopened.execute(
         "SELECT row_identity FROM retention_run_candidates WHERE run_id=? ORDER BY table_name,row_identity", (run_id,)
-    )] == ["1", "raw-expired", "raw-forensic-expired"]
+    )] == ["event-expired", "raw-expired", "raw-forensic-expired"]
 
 
 def test_plan_disabled_and_empty_database_have_no_candidates(tmp_path: Path) -> None:

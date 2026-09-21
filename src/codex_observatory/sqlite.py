@@ -408,6 +408,13 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        8,
+        """
+        ALTER TABLE retention_run_candidates ADD COLUMN coverage_status TEXT NOT NULL DEFAULT 'UNCOVERED'
+            CHECK(coverage_status IN ('COVERED','UNCOVERED','BLOCKED'));
+        """,
+    ),
 )
 
 

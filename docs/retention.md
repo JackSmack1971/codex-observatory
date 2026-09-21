@@ -35,6 +35,30 @@ primary keys are recorded as canonical JSON objects rather than delimiter-joined
 text. The optional `--config` argument accepts a complete observatory TOML file,
 including a `[retention]` table as shown by `config/retention.example.toml`.
 
+## Phase 7.4 archive-coverage proof
+
+Planning now proves archive coverage for each eligible candidate without
+deleting live data. A candidate is `COVERED` only when its stable identity is
+read from a Phase 5 Parquet file in a `PUBLISHED` batch after re-verifying the
+registered manifest path and digest, manifest dataset and canonical schema,
+registered file metadata, safe in-root Parquet path, file SHA-256, readable
+Parquet schema, row count, and identity column. A published registry row by
+itself is never coverage.
+
+Canonical events map by `event_id`, and Git snapshots map by
+`snapshot_observation_id`. Tables without evidence carrying a safe Phase 5
+identity are `UNCOVERED`; the planner does not infer a relationship. A missing
+identity in otherwise valid evidence is also `UNCOVERED`. If relevant
+published evidence cannot be verified, an otherwise unmatched candidate is
+`BLOCKED`. Covered identities remain usable even when a separate batch is
+invalid.
+
+Only `COVERED` candidates enter `planned_delete_count` (`would_delete` in CLI
+output). `UNCOVERED` and `BLOCKED` candidates never do. A plan is `VERIFIED`
+only after this proof has run and its proposed set consists solely of covered
+rows; evidence failures make the plan `BLOCKED`. `VERIFIED` remains a dry-run
+state: Phase 7.4 contains no `DELETE`, hot/cold query change, or `VACUUM`.
+
 <!-- TABLE_CLASSIFICATIONS:START -->
 | Table | Classification |
 | --- | --- |

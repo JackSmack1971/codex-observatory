@@ -260,7 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         connection = connect(db)
         try:
             migrate(connection)
-            print(json.dumps(plan_retention(connection, config.retention).as_dict(), indent=2))
+            archive_root = config.storage.parquet_root or resolve_paths().parquet_root
+            print(json.dumps(plan_retention(connection, config.retention, archive_root=archive_root).as_dict(), indent=2))
             return 0
         finally:
             connection.close()
