@@ -39,3 +39,14 @@ def test_retention_plan_accepts_documented_config(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "VERIFIED"
     assert payload["cutoffs"]
+
+
+def test_retention_run_command_is_machine_readable(tmp_path, capsys) -> None:
+    assert main([
+        "retention", "run", "--db", str(tmp_path / "observatory.db"),
+        "--archive-root", str(tmp_path / "archive"),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "COMPLETED"
+    assert payload["deleted_count"] == 0
+    assert payload["deleted_by_table"]["events"] == 0

@@ -66,6 +66,10 @@ def _parser() -> argparse.ArgumentParser:
     retention_plan = retention_commands.add_parser("plan")
     retention_plan.add_argument("--db", type=Path, default=None)
     retention_plan.add_argument("--config", type=Path, default=None)
+    retention_run = retention_commands.add_parser("run")
+    retention_run.add_argument("--db", type=Path, default=None)
+    retention_run.add_argument("--config", type=Path, default=None)
+    retention_run.add_argument("--archive-root", type=Path, default=None)
     schema = commands.add_parser("schema")
     schema_subcommands = schema.add_subparsers(dest="schema_command")
     schema_subcommands.add_parser("capture")
@@ -250,19 +254,22 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             connection.close()
     if args.command == "retention":
-        if args.retention_command != "plan":
+        if args.retention_command not in {"plan", "run"}:
             print(json.dumps({"status": "NOT_IMPLEMENTED", "command": "retention"}))
             return 1
-        from .retention import plan_retention
+        from .retention import plan_retention, run_retention
         from .sqlite import connect, migrate
         config = load_config(args.config)
         db = args.db or config.storage.sqlite_path or resolve_paths().sqlite_path
         connection = connect(db)
         try:
             migrate(connection)
-            archive_root = config.storage.parquet_root or resolve_paths().parquet_root
-            print(json.dumps(plan_retention(connection, config.retention, archive_root=archive_root).as_dict(), indent=2))
-            return 0
+            archive_root = getattr(args, "archive_root", None) or config.storage.parquet_root or resolve_paths().parquet_root
+            result = (run_retention(connection, config.retention, archive_root=archive_root)
+                      if args.retention_command == "run"
+                      else plan_retention(connection, config.retention, archive_root=archive_root))
+            print(json.dumps(result.as_dict(), indent=2))
+            return 0 if result.status in {"VERIFIED", "COMPLETED"} else 2
         finally:
             connection.close()
     if args.command in {"health", "query", "git-query"}:
