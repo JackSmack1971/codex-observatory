@@ -10,15 +10,34 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Header, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from .api_models import (
+    Agent,
+    Approval,
+    ArchiveHealth,
+    Event,
+    GitSnapshot,
+    Health,
+    Overview,
+    Page,
+    Repository,
+    Session,
+    Skill,
+    Thread,
+    Tool,
+    Turn,
+)
 from .models import RawEnvelope
 from .normalization import normalize
 from .otlp import OtlpError, decode, error_response, response
+from .query import QueryService
 from .sqlite import connect, migrate, persist, update_health
 
 
-def create_app(db_path: Path | str) -> FastAPI:
+def create_app(db_path: Path | str, *, archive_root: Path | None = None, frontend_dist: Path | None = None) -> FastAPI:
     db = Path(db_path)
     migration_connection = connect(db)
     try:
@@ -26,6 +45,83 @@ def create_app(db_path: Path | str) -> FastAPI:
     finally:
         migration_connection.close()
     app = FastAPI(title="Codex Observatory")
+    query = QueryService(db, archive_root)
+
+    @app.get("/api/v1/overview", response_model=Overview)
+    def api_overview(start: str | None = None, end: str | None = None) -> Overview:
+        return query.overview(start, end)
+
+    @app.get("/api/v1/sessions", response_model=Page[Session])
+    def api_sessions(limit: int = Query(50, ge=1, le=100), cursor: str | None = None, start: str | None = None, end: str | None = None) -> Page[Session]:
+        return query.sessions(limit, cursor, start, end)
+
+    @app.get("/api/v1/sessions/{session_id}", response_model=Session)
+    def api_session(session_id: str) -> Session:
+        result = query.session(session_id)
+        if not result:
+            raise HTTPException(404, "session not found")
+        return result
+
+    @app.get("/api/v1/threads", response_model=Page[Thread])
+    def api_threads(limit: int = Query(50, ge=1, le=100), cursor: str | None = None, repo_id: str | None = None) -> Page[Thread]:
+        return query.threads(limit, cursor, repo_id)
+
+    @app.get("/api/v1/threads/{thread_id}", response_model=Thread)
+    def api_thread(thread_id: str) -> Thread:
+        result = query.session(thread_id)
+        if not result:
+            raise HTTPException(404, "thread not found")
+        return Thread.model_validate(result.model_dump())
+
+    @app.get("/api/v1/turns/{turn_id}", response_model=Turn)
+    def api_turn(turn_id: str) -> Turn:
+        result = query.turn(turn_id)
+        if not result:
+            raise HTTPException(404, "turn not found")
+        return result
+
+    @app.get("/api/v1/agents", response_model=Page[Agent])
+    def api_agents(limit: int = Query(50, ge=1, le=100), cursor: str | None = None) -> Page[Agent]: return query.agents(limit, cursor)
+
+    @app.get("/api/v1/tools", response_model=Page[Tool])
+    def api_tools(limit: int = Query(50, ge=1, le=100), cursor: str | None = None) -> Page[Tool]: return query.tools(limit, cursor)
+
+    @app.get("/api/v1/approvals", response_model=Page[Approval])
+    def api_approvals(limit: int = Query(50, ge=1, le=100), cursor: str | None = None) -> Page[Approval]: return query.approvals(limit, cursor)
+
+    @app.get("/api/v1/skills", response_model=Page[Skill])
+    def api_skills(limit: int = Query(50, ge=1, le=100), cursor: str | None = None) -> Page[Skill]: return query.skills(limit, cursor)
+
+    @app.get("/api/v1/git/repositories", response_model=Page[Repository])
+    def api_repositories(limit: int = Query(50, ge=1, le=100), cursor: str | None = None) -> Page[Repository]: return query.repositories(limit, cursor)
+
+    @app.get("/api/v1/git/snapshots", response_model=Page[GitSnapshot])
+    def api_snapshots(limit: int = Query(50, ge=1, le=100), cursor: str | None = None, repo_id: str | None = None) -> Page[GitSnapshot]: return query.snapshots(limit, cursor, repo_id)
+
+    @app.get("/api/v1/archive/health", response_model=ArchiveHealth)
+    def api_archive_health() -> ArchiveHealth: return query.archive_health()
+
+    @app.get("/api/v1/health", response_model=Health)
+    def api_health() -> Health: return query.health()
+
+    @app.get("/api/v1/events", response_model=Page[Event])
+    def api_events(limit: int = Query(100, ge=1, le=200), cursor: str | None = None, start: str | None = None, end: str | None = None, repo_id: str | None = None, source_class: str | None = None, thread_id: str | None = None) -> Page[Event]:
+        if source_class and source_class not in {"NATIVE", "ENRICHED", "DERIVED", "UNKNOWN", "native_otel", "app_server", "hook"}:
+            raise HTTPException(422, "invalid source_class")
+        return query.events(limit, cursor, start, end, repo_id, source_class, thread_id)
+
+    if frontend_dist and (frontend_dist / "index.html").is_file():
+        app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="frontend-assets")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def frontend_route(path: str) -> FileResponse:
+            if path.startswith("api/"):
+                raise HTTPException(404, "not found")
+            requested = (frontend_dist / path).resolve()
+            root = frontend_dist.resolve()
+            if root not in requested.parents and requested != root:
+                raise HTTPException(404, "not found")
+            return FileResponse(requested if requested.is_file() else frontend_dist / "index.html")
 
     @contextmanager
     def request_connection() -> Iterator[sqlite3.Connection]:

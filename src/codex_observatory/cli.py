@@ -276,7 +276,12 @@ def main(argv: list[str] | None = None) -> int:
 
         from .app import create_app
 
-        uvicorn.run(create_app(args.db or resolve_paths().sqlite_path), host="127.0.0.1", port=8765)
+        paths = resolve_paths()
+        config = load_config()
+        db = args.db or config.storage.sqlite_path or paths.sqlite_path
+        archive_root = config.storage.parquet_root or paths.parquet_root
+        frontend_dist = Path("frontend/dist")
+        uvicorn.run(create_app(db, archive_root=archive_root, frontend_dist=frontend_dist), host=config.server.host, port=config.server.port)
         return 0
     if args.command is None:
         _parser().print_help()
