@@ -1,5 +1,10 @@
 # Codex Local Telemetry Observatory
 
+Phase 4 adds read-only Git state evidence on top of the existing observatory.
+Git identity, worktree state, HEAD, status paths, diff statistics, and health
+are persisted in SQLite without storing full diffs. See
+[docs/phase-4-git.md](docs/phase-4-git.md).
+
 Phase 2 adds a read-only Codex App Server adapter on top of the Phase 1 local
 OTLP/HTTP ingestion foundation: protobuf/JSON logs,
 metrics, and traces are decoded, normalized into event.v1, persisted to SQLite,
@@ -19,6 +24,13 @@ npm run build --prefix frontend
 ```
 
 The v1 server contract is loopback-only (`127.0.0.1`). Runtime paths are resolved with `platformdirs`; no runtime database or data directory is stored in this repository.
+
+Explicit Git capture and query:
+
+```text
+uv run codex-observatory git-capture --cwd .
+uv run codex-observatory git-query
+```
 
 See [the Phase 1 OTLP notes](docs/phase-1-otlp.md) for protocol behavior,
 privacy, duplicate handling, schema, and authoritative compatibility sources.

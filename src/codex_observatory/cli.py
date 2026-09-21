@@ -29,6 +29,15 @@ def _parser() -> argparse.ArgumentParser:
     hook_import = commands.add_parser("hooks-import")
     hook_import.add_argument("--db", type=Path, default=None)
     hook_import.add_argument("--spool", type=Path, default=None)
+    git_capture = commands.add_parser("git-capture")
+    git_capture.add_argument("--db", type=Path, default=None)
+    git_capture.add_argument("--cwd", type=Path, default=Path.cwd())
+    git_capture.add_argument("--session-id", default=None)
+    git_capture.add_argument("--thread-id", default=None)
+    git_capture.add_argument("--turn-id", default=None)
+    git_query = commands.add_parser("git-query")
+    git_query.add_argument("--db", type=Path, default=None)
+    git_query.add_argument("--limit", type=int, default=20)
     query = commands.add_parser("query")
     query.add_argument("--db", type=Path, default=None)
     query.add_argument("--limit", type=int, default=20)
@@ -89,12 +98,33 @@ def _doctor() -> int:
         hook_row = app_db.execute("SELECT * FROM hook_source_state WHERE source_instance='local-default'").fetchone()
         hook_status = ("HOOKS_HEALTHY" if hook_row["status"] == "healthy" else "HOOKS_DEGRADED") if hook_row else ("HOOKS_CONFIGURED_NOT_OBSERVED" if hook_configured else "HOOKS_DISABLED")
         checks.append({"name": "hook_health", "status": hook_status, "detail": dict(hook_row) if hook_row else "no hook events observed"})
+        from .git import NotARepository, discover
+        git_detail: object
+        if not config.collectors.git.enabled:
+            git_status, git_detail = "GIT_DISABLED", "collectors.git.enabled=false"
+        elif not shutil.which("git"):
+            git_status, git_detail = "GIT_DEGRADED", "git executable not found"
+        else:
+            try:
+                identity = discover(Path.cwd())
+                git_status = "GIT_REPOSITORY_DETECTED"
+                git_detail = {"root": identity.root, "repo_id": identity.repo_id}
+            except NotARepository:
+                git_status = "GIT_NOT_A_REPOSITORY"
+                git_detail = str(Path.cwd())
+            except Exception as exc:  # noqa: BLE001 - doctor reports component failures as data.
+                git_status = "GIT_DEGRADED"
+                git_detail = str(exc)
+        git_row = app_db.execute("SELECT * FROM git_health WHERE collector='git'").fetchone()
+        if git_row:
+            git_status = git_row["status"] if git_status == "GIT_REPOSITORY_DETECTED" else git_status
+        checks.append({"name": "git", "status": git_status, "detail": git_detail, "health": dict(git_row) if git_row else {"status": "disabled"}})
     finally:
         app_db.close()
     checks.append({"name": "config", "status": "ok", "detail": "validated"})
     checks.append({"name": "runtime_paths", "status": "ok", "detail": {key: str(value) for key, value in asdict(paths).items()}})
     checks.append({"name": "admin_key", "status": "ok" if (not config.collectors.openai_admin.enabled or admin_key_present()) else "degraded", "detail": "environment-only credential check"})
-    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed"} for item in checks)
+    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking", "HOOKS_CONFIGURED_NOT_OBSERVED", "configured_not_observed", "GIT_DEGRADED"} for item in checks)
     print(json.dumps({"version": __version__, "status": "degraded" if degraded else "healthy", "checks": checks}, indent=2))
     return 2 if any(item["status"] == "blocking" for item in checks) else (1 if degraded else 0)
 
@@ -121,7 +151,28 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             connection.close()
         return 0
-    if args.command in {"health", "query"}:
+    if args.command == "git-capture":
+        from .git import GitError, NotARepository, capture, persist_snapshot
+        from .sqlite import connect, migrate
+        db = args.db or resolve_paths().sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection)
+            try:
+                snapshot = capture(args.cwd)
+            except NotARepository:
+                print(json.dumps({"status": "NOT_A_REPOSITORY", "cwd": str(args.cwd)}))
+                return 2
+            except GitError as exc:
+                print(json.dumps({"status": "GIT_DEGRADED", "error": str(exc)}))
+                return 1
+            persist_snapshot(connection, snapshot, session_id=args.session_id, thread_id=args.thread_id, turn_id=args.turn_id)
+            from dataclasses import asdict
+            print(json.dumps({"status": "captured", "snapshot": asdict(snapshot)}, default=str))
+            return 0
+        finally:
+            connection.close()
+    if args.command in {"health", "query", "git-query"}:
         from .sqlite import connect, migrate
 
         db = args.db or resolve_paths().sqlite_path
@@ -132,7 +183,12 @@ def main(argv: list[str] | None = None) -> int:
             result = dict(row) if row else {"collector": "otlp", "status": "healthy"}
             hook_row = connection.execute("SELECT * FROM hook_source_state WHERE source_instance='local-default'").fetchone()
             result["hooks"] = dict(hook_row) if hook_row else {"status": "disabled"}
+            git_row = connection.execute("SELECT * FROM git_health WHERE collector='git'").fetchone()
+            result["git"] = dict(git_row) if git_row else {"status": "disabled", "repositories_discovered_total": 0, "snapshots_total": 0}
             print(json.dumps(result, indent=2))
+        elif args.command == "git-query":
+            rows = connection.execute("SELECT * FROM git_snapshots ORDER BY captured_at DESC LIMIT ?", (max(1, min(args.limit, 1000)),)).fetchall()
+            print(json.dumps([dict(row) for row in rows], indent=2))
         else:
             rows = connection.execute("SELECT * FROM events ORDER BY event_seq DESC LIMIT ?", (max(1, min(args.limit, 1000)),)).fetchall()
             print(json.dumps([dict(row) for row in rows], indent=2))

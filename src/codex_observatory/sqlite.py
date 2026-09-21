@@ -212,6 +212,91 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX idx_correlation_related ON correlation_edges(related_event_id);
         """,
     ),
+    (
+        4,
+        """
+        CREATE TABLE repositories (
+            repo_id TEXT PRIMARY KEY,
+            root TEXT NOT NULL,
+            remote_identity TEXT,
+            bare INTEGER NOT NULL DEFAULT 0,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL
+        );
+        CREATE TABLE worktrees (
+            worktree_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            FOREIGN KEY(repo_id) REFERENCES repositories(repo_id)
+        );
+        CREATE INDEX idx_worktrees_repo ON worktrees(repo_id);
+        CREATE TABLE git_snapshots (
+            snapshot_observation_id TEXT PRIMARY KEY,
+            snapshot_content_digest TEXT NOT NULL,
+            repo_id TEXT NOT NULL,
+            worktree_id TEXT NOT NULL,
+            head_sha TEXT,
+            head_ref TEXT,
+            detached INTEGER NOT NULL,
+            head_state TEXT NOT NULL,
+            upstream_ref TEXT,
+            clean INTEGER NOT NULL,
+            staged_count INTEGER NOT NULL,
+            unstaged_count INTEGER NOT NULL,
+            untracked_count INTEGER NOT NULL,
+            conflicted_count INTEGER NOT NULL,
+            changed_file_count INTEGER NOT NULL,
+            insertions INTEGER NOT NULL,
+            deletions INTEGER NOT NULL,
+            binary_count INTEGER NOT NULL,
+            captured_at TEXT NOT NULL,
+            adapter_version TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            FOREIGN KEY(repo_id) REFERENCES repositories(repo_id),
+            FOREIGN KEY(worktree_id) REFERENCES worktrees(worktree_id)
+        );
+        CREATE INDEX idx_git_snapshots_content ON git_snapshots(snapshot_content_digest);
+        CREATE INDEX idx_git_snapshots_worktree ON git_snapshots(worktree_id,captured_at);
+        CREATE TABLE git_snapshot_paths (
+            snapshot_observation_id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            area TEXT NOT NULL,
+            old_path TEXT,
+            insertions INTEGER,
+            deletions INTEGER,
+            binary INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(snapshot_observation_id,path),
+            FOREIGN KEY(snapshot_observation_id) REFERENCES git_snapshots(snapshot_observation_id)
+        );
+        CREATE TABLE git_snapshot_correlations (
+            correlation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_observation_id TEXT NOT NULL,
+            session_id TEXT,
+            thread_id TEXT,
+            turn_id TEXT,
+            correlation_method TEXT NOT NULL,
+            correlation_confidence TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(snapshot_observation_id) REFERENCES git_snapshots(snapshot_observation_id)
+        );
+        CREATE TABLE git_health (
+            collector TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            repositories_discovered_total INTEGER NOT NULL DEFAULT 0,
+            snapshots_total INTEGER NOT NULL DEFAULT 0,
+            capture_failures_total INTEGER NOT NULL DEFAULT 0,
+            parse_failures_total INTEGER NOT NULL DEFAULT 0,
+            correlations_total INTEGER NOT NULL DEFAULT 0,
+            unresolved_correlations_total INTEGER NOT NULL DEFAULT 0,
+            last_capture TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 )
 
 

@@ -10,7 +10,7 @@ The observatory is read-only with respect to Codex execution. No collector or da
 | Lifecycle hooks | rich local lifecycle facts | hook payload plus receipt metadata | not implemented |
 | App Server | persisted thread reconciliation and controlled notification evidence | versioned JSON/TS schema | Phase 2 implemented |
 | Codex Hooks | lifecycle command-hook observation | current Codex Hooks JSON stdin contract | Phase 3 implemented; enrichment only |
-| Git | repository snapshots | command output at a repository cwd | not implemented |
+| Git | repository snapshots | command output at a repository cwd | Phase 4 implemented; read-only |
 | OpenAI Admin API | optional aggregate usage/costs | remote admin data | not implemented |
 
 Each source must preserve its observed version and provenance. A live contract that differs from a fixture/schema for the detected Codex version fails compatibility visibly; it is not silently adapted.
