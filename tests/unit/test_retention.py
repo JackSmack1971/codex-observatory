@@ -263,6 +263,7 @@ def test_plan_disabled_and_empty_database_have_no_candidates(tmp_path: Path) -> 
     connection = connect(tmp_path / "disabled.db")
     migrate(connection)
     _event(connection, "old", "2000-01-01T00:00:00Z")
+    connection.commit()
     disabled = plan_retention(connection, RetentionConfig(enabled=False), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
     assert disabled.eligible_count == 0
     assert disabled.ineligible_count == 1
@@ -271,3 +272,72 @@ def test_plan_disabled_and_empty_database_have_no_candidates(tmp_path: Path) -> 
     migrate(empty)
     no_rows = plan_retention(empty, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
     assert no_rows.eligible_count == no_rows.ineligible_count == 0
+
+
+def test_composite_candidate_identities_are_canonical_and_collision_free(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    connection = connect(tmp_path / "composite.db")
+    migrate(connection)
+    connection.execute("INSERT INTO repositories VALUES('repo','/repo',NULL,0,'2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')")
+    connection.execute("INSERT INTO worktrees VALUES('tree','repo','/repo','2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')")
+    snapshot = ("digest", "repo", "tree", None, None, 0, "unborn", None, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                "2020-01-01T00:00:00Z", "v1", "evidence")
+    connection.execute("INSERT INTO git_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("a", *snapshot))
+    connection.execute("INSERT INTO git_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("a:b", *snapshot))
+    connection.execute("INSERT INTO git_snapshot_paths VALUES('a','b:c','M','unstaged',NULL,NULL,NULL,0)")
+    connection.execute("INSERT INTO git_snapshot_paths VALUES('a:b','c','M','unstaged',NULL,NULL,NULL,0)")
+    connection.commit()
+
+    plan = plan_retention(connection, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+
+    assert plan.candidates_by_table["git_snapshot_paths"] == (
+        '{"path":"b:c","snapshot_observation_id":"a"}',
+        '{"path":"c","snapshot_observation_id":"a:b"}',
+    )
+    assert connection.execute(
+        "SELECT count(*) FROM retention_run_candidates WHERE run_id=? AND table_name='git_snapshot_paths'",
+        (plan.run_id,),
+    ).fetchone()[0] == 2
+
+
+def test_plan_holds_one_write_snapshot_until_audit_is_persisted(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    path = tmp_path / "snapshot.db"
+    planner = connect(path)
+    migrate(planner)
+    writer = connect(path)
+    writer.execute("PRAGMA busy_timeout=0")
+    blocked: list[str] = []
+
+    def attempt_concurrent_write(statement: str) -> None:
+        if not statement.startswith("SELECT ") or blocked:
+            return
+        try:
+            _event(writer, "concurrent", "2000-01-01T00:00:00Z")
+        except sqlite3.OperationalError as exc:
+            blocked.append(str(exc))
+            writer.rollback()
+
+    planner.set_trace_callback(attempt_concurrent_write)
+    plan = plan_retention(planner, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    planner.set_trace_callback(None)
+
+    assert blocked == ["database is locked"]
+    assert plan.eligible_count == 0
+    _event(writer, "after-plan", "2000-01-01T00:00:00Z")
+    writer.commit()
+    assert writer.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+
+
+def test_plan_rejects_caller_owned_transaction(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    connection = connect(tmp_path / "transaction.db")
+    migrate(connection)
+    connection.execute("BEGIN")
+    with pytest.raises(ValueError, match="no active transaction"):
+        plan_retention(connection, RetentionConfig())
+    assert connection.in_transaction
+    connection.rollback()
