@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from codex_observatory.analytics import AnalyticsService
 from codex_observatory.archive import export_dataset, verify_archive
+from codex_observatory.config import RetentionConfig
+from codex_observatory.retention import run_retention
 from codex_observatory.sqlite import connect, migrate
 
 
@@ -17,9 +20,9 @@ def _db(tmp_path: Path):
     return connection
 
 
-def _event(connection, event_id: str, timestamp: str, source: str = "hook", category: str = "tool_observation", status: str | None = "ok") -> None:
+def _event(connection, event_id: str, timestamp: str, source: str = "hook", category: str = "tool_observation", status: str | None = "ok", repo_id: str = "repo-1") -> None:
     connection.execute("""INSERT INTO events(event_id,event_time,event_time_unix_nano,observed_at,source_class,fact_type,stability,source_event,source_instance,source_version,raw_event_sha256,adapter_version,category,name,status,attributes_json)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (event_id, timestamp, None, timestamp, source, "native", "documented", "event", "local", None, "sha256:source", "test", category, category, status, json.dumps({"repo_id": "repo-1", "safe": True})))
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (event_id, timestamp, None, timestamp, source, "native", "documented", "event", "local", None, "sha256:source", "test", category, category, status, json.dumps({"repo_id": repo_id, "safe": True})))
 
 
 def test_export_empty_and_incremental_idempotent(tmp_path: Path) -> None:
@@ -91,6 +94,62 @@ def test_hot_cold_queries_deduplicate_overlap_and_preserve_order(tmp_path: Path)
     connection.execute("DELETE FROM events WHERE event_id='cold'")
     connection.commit()
     assert service.event_identities() == ["hot", "overlap", "cold"]
+    connection.close()
+
+
+def test_historical_aggregates_are_identical_across_archive_and_prune(tmp_path: Path) -> None:
+    connection = _db(tmp_path)
+    root = tmp_path / "archive"
+    _event(connection, "cold", "2026-01-01T00:00:00Z", "hook", "tool_call", "ok", "repo-1")
+    _event(connection, "overlap", "2026-01-02T00:00:00Z", "otel", "api", "error", "repo-2")
+    connection.commit()
+    export_dataset(connection, root, "events")
+    connection.execute("DELETE FROM events WHERE event_id='cold'")
+    _event(connection, "hot", "2026-01-03T00:00:00Z", "app_server", "tool_result", None, "repo-1")
+    connection.commit()
+
+    service = AnalyticsService(connection, root)
+
+    def results(start: str | None = None, end: str | None = None) -> dict[str, object]:
+        return {
+            "count": service.event_count(start, end),
+            "source": service.events_by("source_class", start, end),
+            "category": service.events_by("category", start, end),
+            "repo": service.events_by("repo_id", start, end),
+            "tools": service.tool_calls(start, end),
+        }
+
+    before = results()
+    assert before == {
+        "count": 3,
+        "source": [
+            {"source_class": "app_server", "count": 1},
+            {"source_class": "hook", "count": 1},
+            {"source_class": "otel", "count": 1},
+        ],
+        "category": [
+            {"category": "api", "count": 1},
+            {"category": "tool_call", "count": 1},
+            {"category": "tool_result", "count": 1},
+        ],
+        "repo": [{"repo_id": "repo-1", "count": 2}, {"repo_id": "repo-2", "count": 1}],
+        "tools": [{"status": "ok", "count": 1}, {"status": None, "count": 1}],
+    }
+    assert results("2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z")["count"] == 1
+    assert results("2026-01-01T23:00:00-01:00", "2026-01-03T00:00:00-01:00")["count"] == 2
+
+    export_dataset(connection, root, "events")
+    retention = run_retention(
+        connection,
+        RetentionConfig(hot_days=30),
+        archive_root=root,
+        evaluation_time=datetime(2026, 9, 21, tzinfo=UTC),
+    )
+    assert retention.deleted_count == 2
+    assert connection.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+    assert results() == before
+    assert results("2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z")["count"] == 1
+    assert results("2026-01-01T23:00:00-01:00", "2026-01-03T00:00:00-01:00")["count"] == 2
     connection.close()
 
 

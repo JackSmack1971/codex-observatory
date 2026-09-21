@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,28 @@ class AnalyticsService:
     def event_count(self, start: str | None = None, end: str | None = None) -> int:
         return len(self.event_identities(start, end))
 
+    def _event_population(
+        self, query_name: str, start: str | None = None, end: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Return canonical event rows from cold and hot storage, with hot winning."""
+
+        columns = "event_id,event_time,source_class,category,name,status,attributes_json"
+        where, params = _time_filter("event_time", start, end)
+        archived = self._run(
+            query_name, "events",
+            f"SELECT {columns} FROM read_parquet({{paths}}, union_by_name=true, "
+            "hive_partitioning=true) WHERE 1=1 " + where,
+            params,
+        )
+        hot_where, hot_params = _sqlite_time_filter("event_time", start, end)
+        hot = self.connection.execute(
+            f"SELECT {columns} FROM events WHERE 1=1 " + hot_where,
+            hot_params,
+        ).fetchall()
+        population = {row["event_id"]: dict(row) for row in archived}
+        population.update({row["event_id"]: dict(row) for row in hot})
+        return population
+
     def event_identities(self, start: str | None = None, end: str | None = None) -> list[str]:
         """Return the stable, ordered union of hot and archived events.
 
@@ -57,32 +80,34 @@ class AnalyticsService:
         counting the overlap twice.
         """
 
-        where, params = _time_filter("event_time", start, end)
-        archived = self._run(
-            "event_identities", "events",
-            "SELECT event_id,event_time FROM read_parquet({paths}, union_by_name=true, "
-            "hive_partitioning=true) WHERE 1=1 " + where,
-            params,
-        )
-        hot_where, hot_params = _sqlite_time_filter("event_time", start, end)
-        hot = self.connection.execute(
-            "SELECT event_id,event_time FROM events WHERE 1=1 " + hot_where,
-            hot_params,
-        ).fetchall()
-        identities = {row["event_id"]: str(row["event_time"]) for row in archived}
-        identities.update({row["event_id"]: row["event_time"] for row in hot})
+        population = self._event_population("event_identities", start, end)
         return [
-            identity for identity, _ in sorted(
-                identities.items(), key=lambda item: (item[1], item[0]), reverse=True,
+            identity for identity, row in sorted(
+                population.items(),
+                key=lambda item: (str(item[1]["event_time"]), item[0]),
+                reverse=True,
             )
         ]
 
     def events_by(self, column: str, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
         if column not in {"source_class", "category", "repo_id"}:
             raise ValueError("unsupported analytics grouping")
-        expression = "json_extract_string(attributes_json, '$.repo_id')" if column == "repo_id" else column
-        where, params = _time_filter("event_time", start, end)
-        return self._run(f"events_by_{column}", "events", f"SELECT {expression} AS {column}, count(*) AS count FROM read_parquet({{paths}}, union_by_name=true, hive_partitioning=true) WHERE 1=1 {where} GROUP BY 1 ORDER BY 1", params)
+        counts: dict[Any, int] = {}
+        for row in self._event_population(f"events_by_{column}", start, end).values():
+            if column == "repo_id":
+                try:
+                    value = json.loads(row["attributes_json"]).get("repo_id")
+                except (AttributeError, TypeError, ValueError):
+                    value = None
+            else:
+                value = row[column]
+            counts[value] = counts.get(value, 0) + 1
+        return [
+            {column: value, "count": count}
+            for value, count in sorted(
+                counts.items(), key=lambda item: (item[0] is None, str(item[0])),
+            )
+        ]
 
     def token_total(self, start: str | None = None, end: str | None = None) -> int:
         where, params = _time_filter("observed_at", start, end)
@@ -138,8 +163,18 @@ class AnalyticsService:
         ]
 
     def tool_calls(self, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
-        where, params = _time_filter("event_time", start, end)
-        return self._run("tool_calls", "events", f"SELECT status, count(*) AS count FROM read_parquet({{paths}}, union_by_name=true, hive_partitioning=true) WHERE (category LIKE '%tool%' OR name LIKE '%tool%') {where} GROUP BY status ORDER BY status", params)
+        counts: dict[str | None, int] = {}
+        for row in self._event_population("tool_calls", start, end).values():
+            if "tool" not in row["category"].lower() and "tool" not in row["name"].lower():
+                continue
+            status = row["status"]
+            counts[status] = counts.get(status, 0) + 1
+        return [
+            {"status": status, "count": count}
+            for status, count in sorted(
+                counts.items(), key=lambda item: (item[0] is None, str(item[0])),
+            )
+        ]
 
 
 def _time_filter(column: str, start: str | None, end: str | None) -> tuple[str, list[str]]:
@@ -147,11 +182,18 @@ def _time_filter(column: str, start: str | None, end: str | None) -> tuple[str, 
     params: list[str] = []
     if start:
         clauses.append(f"AND {column} >= ?")
-        params.append(start)
+        params.append(_canonical_timestamp(start))
     if end:
         clauses.append(f"AND {column} < ?")
-        params.append(end)
+        params.append(_canonical_timestamp(end))
     return " ".join(clauses), params
+
+
+def _canonical_timestamp(value: str) -> str:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return value
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _sqlite_time_filter(
