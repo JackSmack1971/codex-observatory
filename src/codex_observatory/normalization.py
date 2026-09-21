@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 import uuid
 from datetime import UTC, datetime
@@ -26,7 +27,16 @@ KNOWN = {"codex.conversation_starts", "codex.api_request", "codex.sse_event", "c
 def _value(value: Any) -> object:
     if hasattr(value, "WhichOneof"):
         kind = value.WhichOneof("value")
-        return _value(getattr(value, kind)) if kind else None
+        if not kind:
+            return None
+        nested = getattr(value, kind)
+        if kind == "bytes_value":
+            return base64.b64encode(nested).decode("ascii")
+        if kind == "array_value":
+            return [_value(item) for item in nested.values]
+        if kind == "kvlist_value":
+            return {item.key: _value(item.value) for item in nested.values}
+        return _value(nested)
     if isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
@@ -39,6 +49,11 @@ def _attrs(attributes: Any) -> dict[str, object]:
         if not PROMPT_KEYS.search(key):
             result[key] = _value(value)
     return result
+
+
+def _version(attrs: dict[str, object], fallback: str | None) -> str | None:
+    value = attrs.get("service.version") or attrs.get("app.version")
+    return fallback or (str(value) if value else None)
 
 
 def _event_time(nano: int | None) -> str:
@@ -58,10 +73,11 @@ def normalize(signal: str, message: object, *, source_version: str | None, diges
     if signal == "logs":
         for resource_logs in cast(ExportLogsServiceRequest, message).resource_logs:
             resource = _attrs(resource_logs.resource.attributes)
-            version = source_version or str(resource.get("service.version", "")) or None
+            version = _version(resource, source_version)
             for scope_logs in resource_logs.scope_logs:
                 for record in scope_logs.log_records:
                     attrs = _attrs(record.attributes)
+                    version = _version(attrs, version)
                     name = str(attrs.get("event.name") or attrs.get("event_name") or attrs.get("name") or "unknown")
                     if name not in KNOWN:
                         unknown += 1
@@ -76,7 +92,7 @@ def normalize(signal: str, message: object, *, source_version: str | None, diges
             for scope_spans in resource_spans.scope_spans:
                 for span in scope_spans.spans:
                     attrs = _attrs(span.attributes)
-                    events.append(_common(source_version, digest, now, f"span:{span.name or 'unknown'}", attrs, span.start_time_unix_nano, trace_id=span.trace_id.hex(), span_id=span.span_id.hex()))
+                    events.append(_common(_version(attrs, source_version), digest, now, f"span:{span.name or 'unknown'}", attrs, span.start_time_unix_nano, trace_id=span.trace_id.hex(), span_id=span.span_id.hex()))
     return events, unknown
 
 
@@ -99,15 +115,19 @@ def _metric_event(metric: Metric, source_version: str | None, digest: str, now: 
         if kind in {"sum", "gauge"}:
             attrs["value"] = point.as_double if point.WhichOneof("value") == "as_double" else point.as_int
         else:
-            attrs["count"] = point.count
-            attrs["sum"] = point.sum
-            attrs["bucket_counts"] = list(point.bucket_counts)
-            attrs["explicit_bounds"] = list(point.explicit_bounds)
-        attrs["attributes"] = _attrs(point.attributes)
+            attrs["observations"] = [
+                {"count": item.count, "sum": item.sum, "bucket_counts": list(item.bucket_counts),
+                 "explicit_bounds": list(item.explicit_bounds), "time_unix_nano": item.time_unix_nano,
+                 "attributes": _attrs(item.attributes)}
+                for item in points
+            ]
+        if kind in {"sum", "gauge"}:
+            attrs["attributes"] = _attrs(point.attributes)
         time_nano = point.time_unix_nano
     else:
         time_nano = None
-    return _common(source_version, digest, now, f"metric:{metric.name}", attrs, time_nano)
+    point_attrs = _attrs(points[0].attributes) if points else {}
+    return _common(_version(point_attrs, source_version), digest, now, f"metric:{metric.name}", attrs, time_nano)
 
 
 def message_type(signal: str) -> type[Any]:

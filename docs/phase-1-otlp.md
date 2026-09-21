@@ -33,6 +33,30 @@ The receiver does not mutate Codex configuration. A real Codex export requires
 the user to configure the documented exporter endpoint in their user-level
 Codex config; no automatic configuration is performed in this phase.
 
+## Implementation evidence and limits
+
+OTLP protobuf attributes arrive as repeated `KeyValue` messages, not as a
+Python mapping. The adapter recursively preserves OTLP `AnyValue` strings,
+booleans, integers, doubles, bytes (base64), arrays, and key/value lists.
+Histogram metrics remain histogram observations: count, sum, bucket counts,
+explicit bounds, timestamp, and point attributes are stored without inventing
+a scalar `value`. A valid transport payload that fails semantic normalization
+is retained as a raw `normalization_failed` diagnostic.
+
+Each FastAPI request owns and closes its SQLite connection. The receiver does
+not disable SQLite thread checking on a shared connection. Replays are
+identified by `(source_event_type, payload_sha256)`: the later raw envelope is
+retained as `duplicate` and produces no second canonical event.
+
+The real local gate was run with Codex CLI `0.155.1` using command-line OTel
+overrides and `otel.log_user_prompt=false`; it produced 12 log, 1 metric, and
+2 trace requests, 1,020 canonical events, zero rejected records, zero
+persistence errors, and healthy final collector state. This is an
+implementation-specific observation, not a guarantee about every Codex
+version or workload. Prompt-bearing event names/metadata may remain as
+non-content identifiers; prompt text itself is excluded in minimal mode, and
+raw wire payloads are not persisted.
+
 Authoritative sources consulted on 2026-09-20:
 
 - [Codex advanced configuration](https://developers.openai.com/codex/config-advanced/)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,14 @@ def test_invalid_payload_media_type_and_diagnostics(tmp_path: Path) -> None:
     assert len(client.get("/raw-events").json()) == 2
 
 
+def test_malformed_gzip_isolated_as_rejected_raw_evidence(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    result = client.post("/v1/logs", content=b"not-gzip", headers={"content-type": "application/x-protobuf", "content-encoding": "gzip"})
+    assert result.status_code == 400
+    assert client.get("/health").json()["rejected_total"] == 1
+    assert client.get("/raw-events").json()[0]["error_code"] == "malformed_compression"
+
+
 def test_unknown_event_and_attribute_survive_without_prompt(tmp_path: Path) -> None:
     client = _client(tmp_path)
     assert client.post("/v1/logs", content=_log("codex.future_event", "secret prompt"), headers={"content-type": "application/x-protobuf"}).status_code == 200
@@ -142,7 +151,9 @@ def test_json_otlp_uses_otlp_mapping(tmp_path: Path) -> None:
 
 
 def test_sqlite_policies_and_restart(tmp_path: Path) -> None:
-    path = tmp_path / "db.sqlite"
+    path = tmp_path / "observatory.db"
+    client = _client(tmp_path)
+    assert client.post("/v1/logs", content=_log("codex.api_request"), headers={"content-type": "application/x-protobuf"}).status_code == 200
     first = connect(path)
     migrate(first)
     assert first.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
@@ -152,6 +163,16 @@ def test_sqlite_policies_and_restart(tmp_path: Path) -> None:
     second = connect(path)
     migrate(second)
     assert [row[0] for row in second.execute("SELECT version FROM schema_migrations")] == [1]
+    assert second.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+
+
+def test_concurrent_requests_use_request_owned_connections(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    payloads = [_log(f"codex.future_{index}") for index in range(8)]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        statuses = list(executor.map(lambda payload: client.post("/v1/logs", content=payload, headers={"content-type": "application/x-protobuf"}).status_code, payloads))
+    assert statuses == [200] * len(payloads)
+    assert client.get("/health").json()["persistence_error_total"] == 0
 
 
 def test_default_privacy_configuration() -> None:
@@ -159,3 +180,29 @@ def test_default_privacy_configuration() -> None:
     assert config.privacy.mode == "minimal"
     assert config.privacy.store_prompts is False
     assert config.privacy.persist_raw_wire_payloads is False
+
+
+def test_recursive_anyvalue_and_histogram_evidence(tmp_path: Path) -> None:
+    from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+        ExportLogsServiceRequest,
+    )
+
+    request = ExportLogsServiceRequest()
+    record = request.resource_logs.add().scope_logs.add().log_records.add()
+    nested = record.attributes.add()
+    nested.key = "future.map"
+    nested.value.kvlist_value.values.add(key="items").value.array_value.values.add(string_value="kept")
+    client = _client(tmp_path)
+    assert client.post("/v1/logs", content=request.SerializeToString(), headers={"content-type": "application/x-protobuf"}).status_code == 200
+    attrs = json.loads(client.get("/events").json()[0]["attributes_json"])
+    assert attrs["future.map"] == {"items": ["kept"]}
+
+    metric_request = ExportMetricsServiceRequest()
+    metric = metric_request.resource_metrics.add().scope_metrics.add().metrics.add(name="codex.latency")
+    point = metric.histogram.data_points.add(count=3, sum=4.5, time_unix_nano=9)
+    point.bucket_counts.extend([1, 2])
+    point.explicit_bounds.append(10.0)
+    assert client.post("/v1/metrics", content=metric_request.SerializeToString(), headers={"content-type": "application/x-protobuf"}).status_code == 200
+    metric_attrs = json.loads(client.get("/events").json()[0]["attributes_json"])
+    assert "value" not in metric_attrs
+    assert metric_attrs["observations"][0]["count"] == 3
