@@ -179,7 +179,9 @@ def _archive_path(root: Path, relative: Any, suffix: str) -> Path:
     return path
 
 
-def _verified_archive_identities(connection: Any, root: Path) -> tuple[dict[str, set[str]], set[str], list[str]]:
+def _verified_archive_identities(
+    connection: Any, root: Path, candidate_identities: Mapping[str, set[str]],
+) -> tuple[dict[str, set[str]], set[str], list[str]]:
     """Read stable identities only from fully verified published batches."""
 
     root = root.expanduser().resolve()
@@ -189,7 +191,7 @@ def _verified_archive_identities(connection: Any, root: Path) -> tuple[dict[str,
     blocked: set[str] = set()
     failures: list[str] = []
     for batch in connection.execute(
-        "SELECT batch_id,dataset,schema_version,manifest_path,manifest_digest "
+        "SELECT batch_id,dataset,schema_version,manifest_path,manifest_digest,row_count,file_count "
         "FROM archive_batches WHERE status='PUBLISHED' ORDER BY batch_id"
     ).fetchall():
         dataset = batch["dataset"]
@@ -212,6 +214,20 @@ def _verified_archive_identities(connection: Any, root: Path) -> tuple[dict[str,
             files = manifest.get("files")
             if not isinstance(files, list) or not files:
                 raise ValueError("manifest contains no files")
+            file_ids = [spec.get("archive_file_id") for spec in files if isinstance(spec, dict)]
+            if len(file_ids) != len(files) or len(set(file_ids)) != len(file_ids):
+                raise ValueError("manifest file identities are missing or duplicated")
+            manifest_rows = sum(spec.get("row_count", -1) for spec in files)
+            if (manifest.get("total_rows") != manifest_rows or batch["row_count"] != manifest_rows
+                    or batch["file_count"] != len(files)):
+                raise ValueError("manifest and batch aggregates disagree")
+            registered_files = connection.execute(
+                "SELECT file_id,dataset,path,row_count,size_bytes,sha256,schema_version "
+                "FROM archive_files WHERE batch_id=? ORDER BY file_id", (batch["batch_id"],),
+            ).fetchall()
+            if {row["file_id"] for row in registered_files} != set(file_ids):
+                raise ValueError("manifest and registry file sets disagree")
+            registered_by_id = {row["file_id"]: row for row in registered_files}
             identity_column = next(value[1] for value in _ARCHIVE_IDENTITIES.values() if value[0] == dataset)
             batch_identities: set[str] = set()
             parquet = duckdb.connect(":memory:")
@@ -219,27 +235,32 @@ def _verified_archive_identities(connection: Any, root: Path) -> tuple[dict[str,
                 for spec in files:
                     if not isinstance(spec, dict):
                         raise TypeError("invalid manifest file entry")
-                    registered = connection.execute(
-                        "SELECT dataset,path,row_count,sha256,schema_version FROM archive_files "
-                        "WHERE batch_id=? AND file_id=?", (batch["batch_id"], spec.get("archive_file_id")),
-                    ).fetchone()
-                    if registered is None or registered["dataset"] != dataset or registered["schema_version"] != expected_schema:
+                    registered = registered_by_id[spec["archive_file_id"]]
+                    if registered["dataset"] != dataset or registered["schema_version"] != expected_schema:
                         raise ValueError("manifest file is not compatibly registered")
-                    if any(registered[key] != spec.get(key) for key in ("path", "row_count", "sha256")):
+                    if any(registered[key] != spec.get(key) for key in ("path", "row_count", "size_bytes", "sha256")):
                         raise ValueError("manifest and file registry disagree")
                     path = _archive_path(root, spec.get("path"), ".parquet")
                     if not path.is_file():
                         raise FileNotFoundError("archive Parquet file is missing")
+                    if path.stat().st_size != spec.get("size_bytes"):
+                        raise ValueError("archive file size mismatch")
                     if _sha256_file(path) != spec.get("sha256"):
                         raise ValueError("archive file digest mismatch")
                     escaped = str(path).replace("'", "''")
                     columns = {row[0] for row in parquet.execute(f"DESCRIBE SELECT * FROM read_parquet('{escaped}')").fetchall()}
                     if identity_column not in columns:
                         raise ValueError("archive identity column is missing")
-                    rows = parquet.execute(f'SELECT "{identity_column}" FROM read_parquet(\'{escaped}\')').fetchall()
-                    if len(rows) != spec.get("row_count"):
+                    cursor = parquet.execute(f'SELECT "{identity_column}" FROM read_parquet(\'{escaped}\')')
+                    row_count = 0
+                    while rows := cursor.fetchmany(10_000):
+                        row_count += len(rows)
+                        batch_identities.update(
+                            identity for row in rows if row[0] is not None
+                            and (identity := str(row[0])) in candidate_identities[dataset]
+                        )
+                    if row_count != spec.get("row_count"):
                         raise ValueError("archive row count mismatch")
-                    batch_identities.update(str(row[0]) for row in rows if row[0] is not None)
             finally:
                 parquet.close()
             identities[dataset].update(batch_identities)
@@ -330,9 +351,25 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
             candidates[table] = tuple(eligible)
 
         eligible_count = sum(map(len, candidates.values()))
+        candidate_identities = {
+            dataset: {
+                identity
+                for table, rows in candidates.items()
+                if (mapping := _ARCHIVE_IDENTITIES.get(table)) is not None
+                and mapping[0] == dataset
+                for identity in rows
+            }
+            for dataset, _ in _ARCHIVE_IDENTITIES.values()
+        }
+        proof_unavailable = archive_root is None
         archive_identities, blocked_datasets, archive_failures = (
-            _verified_archive_identities(connection, archive_root) if archive_root is not None
-            else ({dataset: set() for dataset, _ in _ARCHIVE_IDENTITIES.values()}, set(), [])
+            _verified_archive_identities(connection, archive_root, candidate_identities)
+            if archive_root is not None
+            else (
+                {dataset: set() for dataset, _ in _ARCHIVE_IDENTITIES.values()},
+                set(),
+                ["archive root is not configured; archive coverage was not verified"],
+            )
         )
         coverage: dict[str, Mapping[str, str]] = {}
         for table, rows in candidates.items():
@@ -352,21 +389,35 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
         covered_count = sum(value == CoverageStatus.COVERED for rows in coverage.values() for value in rows.values())
         blocked_count = sum(value == CoverageStatus.BLOCKED for rows in coverage.values() for value in rows.values())
         uncovered_count = eligible_count - covered_count - blocked_count
-        plan_status = "BLOCKED" if blocked_count else "VERIFIED"
-        coverage_status = "BLOCKED" if blocked_count else ("COVERED" if covered_count == eligible_count else "UNCOVERED")
+        deletable = {
+            table: {identity for identity, status in rows.items() if status == CoverageStatus.COVERED}
+            for table, rows in coverage.items()
+        }
+        for snapshot_id in tuple(deletable["git_snapshots"]):
+            has_dependents = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM git_snapshot_paths WHERE snapshot_observation_id=?) "
+                "OR EXISTS(SELECT 1 FROM git_snapshot_correlations WHERE snapshot_observation_id=?)",
+                (snapshot_id, snapshot_id),
+            ).fetchone()[0]
+            if has_dependents:
+                deletable["git_snapshots"].remove(snapshot_id)
+        planned_deletion_count = sum(map(len, deletable.values()))
+        plan_status = "BLOCKED" if proof_unavailable or blocked_count else "VERIFIED"
+        coverage_status = "BLOCKED" if proof_unavailable or blocked_count else ("COVERED" if covered_count == eligible_count else "UNCOVERED")
         connection.execute(
             "INSERT INTO retention_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, evaluation_text, evaluation_text, evaluation_text, digest, cutoff_json,
-             plan_status, eligible_count, covered_count, uncovered_count + blocked_count, covered_count, 0,
+             plan_status, eligible_count, covered_count, uncovered_count + blocked_count, planned_deletion_count, 0,
              "; ".join(archive_failures) if archive_failures else None),
         )
         for table in PRUNABLE_HISTORY_ORDER:
             rows = candidates[table]
             table_covered = sum(value == CoverageStatus.COVERED for value in coverage[table].values())
-            connection.execute("INSERT INTO retention_run_tables VALUES (?,?,?,?,?,?,?)", (run_id, table, len(rows), table_covered, len(rows) - table_covered, table_covered, 0))
+            table_planned = len(deletable[table])
+            connection.execute("INSERT INTO retention_run_tables VALUES (?,?,?,?,?,?,?)", (run_id, table, len(rows), table_covered, len(rows) - table_covered, table_planned, 0))
             connection.executemany(
-                "INSERT INTO retention_run_candidates(run_id,table_name,row_identity,coverage_status) VALUES(?,?,?,?)",
-                ((run_id, table, identity, coverage[table][identity]) for identity in rows),
+                "INSERT INTO retention_run_candidates(run_id,table_name,row_identity,coverage_status,planned_delete) VALUES(?,?,?,?,?)",
+                ((run_id, table, identity, coverage[table][identity], int(identity in deletable[table])) for identity in rows),
             )
         connection.commit()
     except Exception:
@@ -378,7 +429,7 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
         coverage_by_table=MappingProxyType(coverage), eligible_count=eligible_count,
         ineligible_count=ineligible, archive_coverage_status=coverage_status,
         covered_count=covered_count, uncovered_count=uncovered_count,
-        blocked_count=blocked_count, planned_deletion_count=covered_count,
+        blocked_count=blocked_count, planned_deletion_count=planned_deletion_count,
         status=plan_status, diagnostics=tuple(diagnostics),
     )
 

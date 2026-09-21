@@ -75,7 +75,7 @@ def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
         for row in phase6.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )
-    ] == [1, 2, 3, 4, 5, 6, 7, 8]
+    ] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
 def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
@@ -228,6 +228,7 @@ def test_plan_is_deterministic_dry_run_across_tables_and_persists(tmp_path: Path
     plan = plan_retention(
         connection,
         RetentionConfig(hot_days=30, raw_metadata_days=7, forensic_raw_days=2),
+        archive_root=tmp_path / "archive",
         evaluation_time=datetime(2026, 9, 21, tzinfo=UTC),
     )
 
@@ -265,13 +266,13 @@ def test_plan_disabled_and_empty_database_have_no_candidates(tmp_path: Path) -> 
     migrate(connection)
     _event(connection, "old", "2000-01-01T00:00:00Z")
     connection.commit()
-    disabled = plan_retention(connection, RetentionConfig(enabled=False), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    disabled = plan_retention(connection, RetentionConfig(enabled=False), archive_root=tmp_path / "archive", evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
     assert disabled.eligible_count == 0
     assert disabled.ineligible_count == 1
 
     empty = connect(tmp_path / "empty.db")
     migrate(empty)
-    no_rows = plan_retention(empty, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    no_rows = plan_retention(empty, RetentionConfig(), archive_root=tmp_path / "archive", evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
     assert no_rows.eligible_count == no_rows.ineligible_count == 0
 
 
@@ -290,7 +291,7 @@ def test_composite_candidate_identities_are_canonical_and_collision_free(tmp_pat
     connection.execute("INSERT INTO git_snapshot_paths VALUES('a:b','c','M','unstaged',NULL,NULL,NULL,0)")
     connection.commit()
 
-    plan = plan_retention(connection, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    plan = plan_retention(connection, RetentionConfig(), archive_root=tmp_path / "archive", evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
 
     assert plan.candidates_by_table["git_snapshot_paths"] == (
         '{"path":"b:c","snapshot_observation_id":"a"}',
@@ -322,7 +323,7 @@ def test_plan_holds_one_write_snapshot_until_audit_is_persisted(tmp_path: Path) 
             writer.rollback()
 
     planner.set_trace_callback(attempt_concurrent_write)
-    plan = plan_retention(planner, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    plan = plan_retention(planner, RetentionConfig(), archive_root=tmp_path / "archive", evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
     planner.set_trace_callback(None)
 
     assert blocked == ["database is locked"]
