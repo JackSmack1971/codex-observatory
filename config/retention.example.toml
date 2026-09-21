@@ -1,0 +1,6 @@
+hot_days = 30
+raw_metadata_days = 7
+forensic_raw_days = 7
+historical_days = 365
+aggregate_days = 0
+run_interval_hours = 24

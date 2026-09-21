@@ -1,0 +1,57 @@
+schema_version = 1
+
+[server]
+host = "127.0.0.1"
+port = 8765
+
+[storage]
+# Omit these paths to resolve them with platformdirs.
+sqlite_synchronous = "NORMAL"
+write_batch_size = 100
+write_batch_max_wait_ms = 50
+
+[collectors.otlp]
+enabled = true
+max_decompressed_bytes = 67108864
+accept_protobuf = true
+accept_json = true
+accept_gzip = true
+
+[collectors.hooks]
+enabled = true
+poll_interval_ms = 250
+
+[collectors.git]
+enabled = true
+command_timeout_seconds = 5
+
+[collectors.app_server]
+enabled = true
+mode = "reconcile"
+reconcile_interval_seconds = 30
+include_turns = true
+
+[collectors.openai_admin]
+enabled = false
+sync_interval_minutes = 60
+bucket_width = "1h"
+
+[privacy]
+mode = "minimal"
+store_prompts = false
+store_tool_arguments = "digest"
+store_tool_output = "digest"
+persist_raw_wire_payloads = false
+processing_spool_max_hours = 1
+
+[retention]
+hot_days = 30
+raw_metadata_days = 7
+forensic_raw_days = 7
+historical_days = 365
+aggregate_days = 0
+run_interval_hours = 24
+
+[compatibility]
+unknown_codex_version = "warn"
+require_generated_app_server_schema = true
