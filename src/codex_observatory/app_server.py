@@ -232,6 +232,9 @@ def ingest_notification(connection: Any, method: str, params: dict[str, Any], *,
         raw_thread = params.get("thread")
         thread: dict[str, Any] = raw_thread if isinstance(raw_thread, dict) else {"id": thread_id, "status": params.get("status")}
         upsert_thread(connection, thread, loaded=True, source_instance=source_instance)
+    elif method in {"thread/archived", "thread/unarchived"}:
+        with connection:
+            connection.execute("UPDATE threads SET archived=?,loaded=CASE WHEN ?=1 THEN 0 ELSE loaded END,observed_at=? WHERE thread_id=?", (int(method == "thread/archived"), int(method == "thread/archived"), _now(), thread_id))
     elif method == "thread/closed":
         with connection:
             connection.execute("UPDATE threads SET loaded=0,runtime_status='notLoaded',observed_at=? WHERE thread_id=?", (_now(), thread_id))
