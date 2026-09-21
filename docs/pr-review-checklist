@@ -1,0 +1,266 @@
+---
+name: code-review-checklist
+description: Evidence-first, risk-aware three-layer PR review checklist for automated and human-assisted review.
+version: 2.0
+report_schema_version: 2
+compatibility: breaking
+---
+
+# PR Code Review Checklist
+
+## Purpose
+
+- Review one pull request against three distinct layers: mechanical validation, semantic/code review, and change-context/merge-safety review.
+- Keep deterministic checks owned by tooling and reserve reviewer effort for behavior, architecture, risk, tests, and context.
+- Review the PR as a diff against its actual base while inspecting enough surrounding code to understand the system impact.
+- Produce one evidence-backed, machine-parseable report using `OUTPUT_FORMAT`.
+
+## Non-Negotiable Principles
+
+1. **Diff-first, context-aware.** Start with the changed surface, then inspect surrounding code, callers, contracts, tests, configuration, and state affected by the change.
+2. **Review the current state.** Evidence must apply to the PR's current `head_sha`; stale CI or evidence from an earlier revision does not prove the current revision.
+3. **Automate deterministic checks.** Formatting, linting, compilation, configured scanners, and test execution belong to tooling when tooling exists.
+4. **No guessed passes.** Every `PASS` requires positive evidence. Absence of an observed problem is not sufficient evidence by itself.
+5. **Applicability is explicit.** Use `NA` only when a check truly cannot apply. Never use `NA` to mean "not inspected" or "unknown."
+6. **Escalate expertise, not uncertainty.** Security, privacy, concurrency, accessibility, internationalization, migration, or other specialist-sensitive changes require qualified review when the primary reviewer cannot establish safety.
+7. **Review risks, not dogma.** Do not fail code merely for violating generic slogans such as DRY, SRP, "minimal nesting," method-length rules, or "no magic values." Fail only when the concrete design creates a correctness, security, operability, or material maintainability problem.
+8. **Prefer coherent changes over numeric size rules.** A PR should represent one reviewable, self-contained change. Large or mixed-scope changes should be split when they prevent reliable review; line count alone is not a verdict.
+9. **Separate required changes from nits.** A `FAIL` means the change must be corrected before approval. Non-blocking polish belongs in `observations`.
+
+## Protocol
+
+### Step 0 — Establish Review Identity and Scope
+
+Before assigning verdicts, record:
+
+- PR identifier or URL.
+- Base branch and `base_sha`.
+- Current `head_sha`.
+- Changed files and generated/vendor artifacts.
+- Declared PR intent, linked issue/spec/goal, and acceptance criteria when present.
+- Repository-local review instructions, ownership rules, and required status checks.
+- Any part of the diff intentionally excluded from this review and who owns that review.
+
+If the current base/head identity or changed surface cannot be established, do not guess. Mark the affected checks `UNVERIFIED`.
+
+### Step 1 — Classify Risk Triggers
+
+Record every applicable risk flag before detailed review:
+
+- `security`
+- `privacy`
+- `authentication_authorization`
+- `concurrency`
+- `data_migration`
+- `public_contract`
+- `dependency_or_external_integration`
+- `performance`
+- `deployment_or_infrastructure`
+- `ui_accessibility`
+- `internationalization`
+
+Risk flags do not fail a PR. They determine which checks require deeper evidence or specialist review.
+
+### Step 2 — Run Layer 1
+
+Use repository-defined tooling and current CI evidence. Do not manually re-review formatting, lint, or other deterministic output when authoritative tooling already decides it.
+
+### Step 3 — Run Layer 2
+
+Review every human-written changed line within the declared review scope and enough surrounding code to understand behavior, invariants, contracts, and downstream effects.
+
+### Step 4 — Run Layer 3
+
+Verify that the change is understandable, reviewable, operationally safe, and supported by the context and approvals required for this repository and this risk profile.
+
+### Step 5 — Apply Finding Discipline
+
+- Assign each defect to one primary check ID; do not duplicate the same finding under multiple checks.
+- Every `PASS`, `FAIL`, `NA`, `UNVERIFIED`, and `ESCALATE` requires evidence or a specific reason.
+- Every `FAIL` must state impact and a concrete remediation.
+- Use `ESCALATE` only when qualified human/domain review is required, not merely because evidence is missing.
+- Use `UNVERIFIED` when required evidence is unavailable, stale, inaccessible, or not produced.
+- Put optional polish, teaching notes, and non-blocking suggestions in `observations`.
+
+## Verdicts
+
+| Verdict | Meaning |
+|---|---|
+| `PASS` | Positive evidence shows the check is satisfied for the current PR revision. |
+| `FAIL` | Evidence shows a merge-blocking or approval-blocking problem. |
+| `NA` | The check cannot apply to this PR; reason required. |
+| `UNVERIFIED` | The check matters, but required evidence is missing, stale, or inaccessible. |
+| `ESCALATE` | The check requires qualified human/domain judgment beyond the current reviewer. |
+
+### Failure Severity
+
+`severity` is required only when `verdict: FAIL`.
+
+| Severity | Meaning |
+|---|---|
+| `BLOCKER` | Must not merge until resolved; includes broken required automation or a demonstrated critical correctness/security/data-integrity/merge-safety issue. |
+| `REQUIRED` | Must be corrected before approval, but does not represent an infrastructure-level or catastrophic merge block. |
+
+## Layer 1: Mechanical Validation
+
+Owner: repository tooling and CI.
+
+Rule: Layer 1 reports the state of automated validation; it does not substitute reviewer opinion for tool output.
+
+| ID | Category | Check | Evidence source |
+|---|---|---|---|
+| `L1-TOOL-01` | Validation coverage | Is the repository-defined PR validation set discoverable and associated with the current `head_sha`? | CI configuration, rulesets/branch policy, check suite |
+| `L1-STATUS-01` | Required checks | Have all required status checks completed with acceptable conclusions for the current `head_sha`? | required checks / CI status |
+| `L1-SKIP-01` | Execution integrity | Did relevant validation jobs actually execute, or is every skip/neutral result explicitly expected? | workflow/job results and conditions |
+| `L1-TEST-01` | Automated tests | Do configured automated test jobs pass? | CI test output |
+| `L1-STATIC-01` | Static validation | Do configured formatter, linter, type-checker, and static-analysis jobs pass? | configured tool output |
+| `L1-BUILD-01` | Build/package | Does the configured build, compile, or packaging validation pass when applicable? | build/package job output |
+| `L1-SCAN-01` | Automated security | Do configured dependency, secret, SAST, or other security scans pass when applicable? | configured scanner output |
+
+## Layer 2: Semantic and Structural Review
+
+Owner: reviewer/agent, with specialist escalation when required.
+
+Scope: behavior, codebase fit, invariants, risk, test quality, and long-term consequences.
+
+### Correctness & State
+
+| ID | Check |
+|---|---|
+| `L2-COR-01` | Does the implementation produce the stated behavior without an evident regression in affected callers or users? |
+| `L2-COR-02` | Are boundary conditions, invalid inputs, failure paths, and relevant edge cases handled correctly? |
+| `L2-COR-03` | Are state transitions, invariants, ordering assumptions, and partial-failure behavior preserved? |
+| `L2-CONC-01` | If concurrency, transactions, retries, or repeated delivery are relevant, are race safety, atomicity, and idempotency correct? |
+
+### Architecture & Compatibility
+
+| ID | Check |
+|---|---|
+| `L2-ARCH-01` | Does the change respect existing component boundaries, responsibility allocation, ownership, and data flow? |
+| `L2-ARCH-02` | Is the implementation no more complex or abstract than the demonstrated requirement needs? |
+| `L2-COMPAT-01` | Are public interfaces, schemas, configuration, defaults, serialization, and persisted-state compatibility preserved or intentionally migrated? |
+| `L2-DEP-01` | Are new or changed dependencies/external integrations justified, correctly bounded, and resilient to their documented failure modes? |
+
+### Security & Sensitive Data
+
+| ID | Check |
+|---|---|
+| `L2-SEC-01` | At changed trust boundaries, are inputs validated and outputs encoded/constructed safely for their execution context? |
+| `L2-SEC-02` | Are authentication, authorization, privilege, secrets, sensitive data, and security-relevant logging handled correctly where applicable? |
+
+### Reliability, Performance & Observability
+
+| ID | Check |
+|---|---|
+| `L2-REL-01` | Are errors, retries, timeouts, cancellation, cleanup, and degraded behavior handled without masking failures or leaking resources? |
+| `L2-PERF-01` | Does the change avoid unjustified algorithmic, I/O, memory, latency, or scalability regressions, with measurements when performance risk is material? |
+| `L2-OBS-01` | When operational behavior changes, are diagnostics sufficient to detect and investigate failures without exposing sensitive data? |
+
+### Testing
+
+| ID | Check |
+|---|---|
+| `L2-TEST-01` | Do tests cover the changed behavior and the highest-risk failure/edge cases at the appropriate test level? |
+| `L2-TEST-02` | Are the tests capable of detecting a real regression, with meaningful assertions and without mocks/fakes bypassing the behavior under review? |
+| `L2-TEST-03` | For a bug fix, is there a regression test that would fail on the pre-fix behavior, or a concrete reason why such a test is impractical? |
+
+### Maintainability
+
+| ID | Check |
+|---|---|
+| `L2-MAINT-01` | Are names, control flow, comments, and local conventions clear enough for a future maintainer to understand the behavior and why it exists? |
+| `L2-MAINT-02` | Does duplication, abstraction, or code organization create a material maintenance risk, rather than merely violating a stylistic preference? |
+
+## Layer 3: Change Context and Merge Safety
+
+Owner: PR author supplies context and evidence; reviewer confirms sufficiency.
+
+Rule: Missing required PR context is not automatically a code defect. Use `FAIL` when repository policy or safe review requires the missing item; use `UNVERIFIED` when the evidence should exist but cannot be accessed; use `NA` when the item truly does not apply.
+
+| ID | Category | Check |
+|---|---|---|
+| `L3-INTENT-01` | Intent | Does the PR explain what changes, why it changes, and the intended observable outcome? |
+| `L3-SCOPE-01` | Reviewability | Is the PR one coherent, reviewable change without unrelated refactoring or behavior changes that materially obscure review? |
+| `L3-TRACE-01` | Requirements | When governed by an issue/spec/goal/acceptance criteria, is the implementation traceable to those requirements? |
+| `L3-RISK-01` | Risk | Are material affected surfaces and risk triggers identified or otherwise evident from the change? |
+| `L3-DOC-01` | Documentation | Are user, developer, API, operator, or configuration docs updated when the change alters how the system is used or operated? |
+| `L3-ROLL-01` | Rollout | When operationally relevant, is rollout, feature-flag use, disablement, or rollback strategy adequate for the change? |
+| `L3-MIG-01` | Migration | For persisted data/schema/state changes, are forward migration, compatibility, backfill, failure handling, and rollback/irreversibility addressed? |
+| `L3-MANUAL-01` | Non-automated validation | When automation cannot establish behavior sufficiently, is appropriate manual/visual/accessibility/performance validation evidence supplied? |
+| `L3-AUTH-01` | Review authority | Have repository-required owners, approvers, and risk-triggered specialists reviewed or been explicitly requested as required by policy? |
+| `L3-RELEASE-01` | Release metadata | Are changelog, release-note, versioning, or release annotations present when project policy or externally visible impact requires them? |
+
+## Specialist Escalation Rules
+
+Use `ESCALATE` for the affected check when the reviewer cannot establish safety and the diff materially touches a specialist domain, including:
+
+- authentication, authorization, cryptography, trust boundaries, or sensitive data;
+- privacy-sensitive collection, retention, or disclosure;
+- concurrency, lock ordering, distributed consistency, or transactional integrity;
+- destructive or irreversible data/schema migration;
+- accessibility-critical UI behavior;
+- internationalization/localization correctness;
+- domain-specific safety, compliance, or methodology requirements.
+
+Do not convert a specialist-sensitive check to `PASS` based only on general coding competence.
+
+## Decision Rules
+
+- Any `FAIL` in Layer 1: overall `BLOCK`.
+- Any `FAIL` with `severity: BLOCKER`: overall `BLOCK`.
+- Otherwise, any `FAIL` with `severity: REQUIRED`: overall `CHANGES_REQUESTED`.
+- No `FAIL`, but at least one `ESCALATE`: overall `NEEDS_HUMAN`.
+- No `FAIL` or `ESCALATE`, but at least one `UNVERIFIED`: overall `NEEDS_EVIDENCE`.
+- All checks `PASS` or `NA`: overall `APPROVE`.
+- Precedence: `BLOCK` > `CHANGES_REQUESTED` > `NEEDS_HUMAN` > `NEEDS_EVIDENCE` > `APPROVE`.
+
+## Finding Quality Standard
+
+A blocking finding is valid only when it states:
+
+1. **Evidence** — the exact changed or affected location, test/tool result, contract, or PR evidence.
+2. **Impact** — what can go wrong and under what condition.
+3. **Remediation** — the smallest concrete change that resolves the demonstrated problem.
+
+Do not block on personal preference when multiple implementations are equivalently correct and consistent with repository standards.
+
+## OUTPUT_FORMAT
+
+Emit exactly this structure:
+
+```yaml
+pr: <identifier or URL>
+base_sha: <full or repository-accepted SHA>
+head_sha: <full or repository-accepted SHA>
+review_scope:
+  changed_files: <integer>
+  reviewed: all | [<path>, ...]
+  excluded: [] | [<path or scope>, ...]
+  scope_complete: true | false
+risk_flags: [] | [security, privacy, authentication_authorization, concurrency, data_migration, public_contract, dependency_or_external_integration, performance, deployment_or_infrastructure, ui_accessibility, internationalization]
+overall: APPROVE | CHANGES_REQUESTED | NEEDS_HUMAN | NEEDS_EVIDENCE | BLOCK
+summary: <one to three sentences>
+checks:
+  - id: <check ID>
+    verdict: PASS | FAIL | NA | UNVERIFIED | ESCALATE
+    evidence: <specific evidence or reason; required for every verdict>
+    severity: BLOCKER | REQUIRED       # required only for FAIL
+    impact: <concrete consequence>     # required only for FAIL
+    fix: <concrete remediation>        # required only for FAIL
+    missing: <required evidence>       # required only for UNVERIFIED
+    escalation: <reviewer/domain>      # required only for ESCALATE
+observations: [] | [<non-blocking note>, ...]
+```
+
+## Output Rules
+
+- List every check ID exactly once and in layer order.
+- Omit condition-only keys (`severity`, `impact`, `fix`, `missing`, `escalation`) when they do not apply to that verdict.
+- `evidence` is required for **every** verdict, including `PASS`.
+- Evidence must refer to the current PR revision and should be as specific as available: `file:line`, symbol, test name, CI job/check, PR section, issue/spec clause, or tool output.
+- Do not use `PASS` merely because no defect was noticed.
+- Do not use `NA` for unreviewed, unknown, inaccessible, or unsupported checks.
+- Do not invent tool results, approvals, requirements, or runtime behavior.
+- A check result from an earlier commit does not prove the current `head_sha`.
+- Keep each finding concise, but never omit the failure condition or impact to save space.
+- Put optional nits and suggestions in `observations`; they do not affect the overall verdict.
