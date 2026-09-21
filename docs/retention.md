@@ -9,6 +9,13 @@ Historical exports are immutable Parquet batches with a manifest registry and SH
 Phase 7.1 defines planning contracts only. It does not add a retention runner,
 archive verification, deletion capability, or a schema migration.
 
+## Phase 7.2 durable audit state
+
+Phase 7.2 adds migration 6 and only the durable planning and execution evidence
+stored in `retention_runs` and `retention_run_tables`. It does not add a
+retention runner, archive coverage verification, deletion capability, hot/cold
+query changes, vacuuming, scheduling, or dashboard mutation.
+
 `src/codex_observatory/retention.py` is the authoritative, machine-readable
 table-classification registry. The table below is generated from that registry
 and is guarded by a consistency test. SQLite-internal tables (currently

@@ -123,6 +123,27 @@ def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_retention_audit_constraints_reject_invalid_evidence(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "constraints.db")
+    migrate(connection)
+    insert_run = (
+        "INSERT INTO retention_runs VALUES "
+        "(?, '2026-09-21T00:00:00Z', NULL, '2026-09-21T00:00:00Z', "
+        "'sha256:policy', '{}', ?, ?, 0, 0, 0, 0, NULL)"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(insert_run, ("invalid-status", "UNKNOWN", 0))
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(insert_run, ("negative-count", "PLANNED", -1))
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO retention_run_tables VALUES (?,?,?,?,?,?,?)",
+            ("missing-run", "events", 0, 0, 0, 0, 0),
+        )
+    connection.close()
+
+
 def test_documented_registry_is_generated_from_production_contract() -> None:
     documentation = Path("docs/retention.md").read_text()
     start = "<!-- TABLE_CLASSIFICATIONS:START -->\n"
