@@ -70,6 +70,33 @@ only after this proof has run and its proposed set consists solely of covered
 rows; evidence failures make the plan `BLOCKED`. `VERIFIED` remains a dry-run
 state: Phase 7.4 contains no `DELETE`, hot/cold query change, or `VACUUM`.
 
+## Phase 7.5 destructive pruning
+
+`codex-observatory retention run` creates a fresh plan and completes archive
+verification before opening the deletion transaction. Under a bounded SQLite
+write lock it recomputes the complete eligible candidate set and re-verifies
+the archive files, manifests, registry metadata, and required identities. Any added,
+removed, or newly ineligible candidate makes the run `BLOCKED`, rolls back all
+deletes, and requires replanning.
+
+Only candidate identities durably marked both `COVERED` and `planned_delete=1`
+are deleted. Deletion follows `PRUNABLE_HISTORY_ORDER` (children before
+parents), records each table's actual delete count, verifies table counts before
+commit, and atomically marks the run `COMPLETED`. An execution failure rolls
+back the destructive transaction and records a zero-delete `FAILED` audit.
+Uncovered candidates remain live. A second run is safe and produces a completed
+zero-delete audit when nothing else has become eligible.
+
+SQLite foreign keys remain enabled. Covered events and Git snapshots with live
+dependent rows are excluded from the planned set because Phase 5 archives do
+not contain stable identities for those children. Raw rows have no cascading
+relationship to canonical events: removing raw diagnostics cannot remove
+normalized evidence. Current token-usage projections remain non-prunable under
+this contract. The runner does not schedule itself, vacuum SQLite, delete
+archives, or expose destructive dashboard controls.
+Operational SQLite failures from the CLI are emitted as structured `FAILED`
+JSON with exit status 2.
+
 <!-- TABLE_CLASSIFICATIONS:START -->
 | Table | Classification |
 | --- | --- |

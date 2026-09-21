@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from codex_observatory.cli import main
@@ -39,3 +40,27 @@ def test_retention_plan_accepts_documented_config(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "VERIFIED"
     assert payload["cutoffs"]
+
+
+def test_retention_run_command_is_machine_readable(tmp_path, capsys) -> None:
+    assert main([
+        "retention", "run", "--db", str(tmp_path / "observatory.db"),
+        "--archive-root", str(tmp_path / "archive"),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "COMPLETED"
+    assert payload["deleted_count"] == 0
+    assert payload["deleted_by_table"]["events"] == 0
+
+
+def test_retention_run_operational_failure_is_machine_readable(monkeypatch, capsys) -> None:
+    import codex_observatory.sqlite as sqlite_module
+
+    def unavailable(_path):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(sqlite_module, "connect", unavailable)
+    assert main(["retention", "run"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "FAILED", "error": "database is locked",
+    }

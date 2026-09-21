@@ -1,9 +1,10 @@
-"""Deterministic, non-destructive retention planning."""
+"""Deterministic retention planning and archive-gated SQLite pruning."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -278,6 +279,7 @@ class RetentionPlanV1:
     cutoffs: Mapping[str, str] | None = None
     candidates_by_table: Mapping[str, tuple[str, ...]] | None = None
     coverage_by_table: Mapping[str, Mapping[str, str]] | None = None
+    planned_deletions_by_table: Mapping[str, tuple[str, ...]] | None = None
     eligible_count: int = 0
     ineligible_count: int = 0
     archive_coverage_status: str = "UNCOVERED"
@@ -294,6 +296,9 @@ class RetentionPlanV1:
             "policy_digest": self.policy_digest, "cutoffs": dict(self.cutoffs or {}),
             "candidates_by_table": {key: list(items) for key, items in (self.candidates_by_table or {}).items()},
             "coverage_by_table": {key: dict(items) for key, items in (self.coverage_by_table or {}).items()},
+            "planned_deletions_by_table": {
+                key: list(items) for key, items in (self.planned_deletions_by_table or {}).items()
+            },
             "eligible_count": self.eligible_count, "ineligible_count": self.ineligible_count,
             "archive_coverage_status": self.archive_coverage_status,
             "covered_count": self.covered_count, "uncovered_count": self.uncovered_count,
@@ -303,6 +308,62 @@ class RetentionPlanV1:
             "uncovered": self.uncovered_count, "would_delete": self.planned_deletion_count,
             "diagnostics": [asdict(item) for item in self.diagnostics],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionRunV1:
+    """The durable outcome of one destructive retention attempt."""
+
+    run_id: str
+    status: str
+    planned_deletion_count: int
+    deleted_count: int
+    deleted_by_table: Mapping[str, int]
+    failure_reason: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "status": self.status,
+            "planned_deletion_count": self.planned_deletion_count,
+            "deleted_count": self.deleted_count,
+            "deleted_by_table": dict(self.deleted_by_table),
+            "failure_reason": self.failure_reason,
+        }
+
+
+class RetentionCandidateChanged(RuntimeError):
+    """Raised when the write-locked candidate snapshot differs from its proof."""
+
+
+def _eligible_candidates(
+    connection: Any, config: RetentionConfig, cutoffs: Mapping[str, str],
+) -> tuple[dict[str, tuple[str, ...]], list[RetentionDiagnosticV1], int]:
+    candidates: dict[str, tuple[str, ...]] = {}
+    diagnostics: list[RetentionDiagnosticV1] = []
+    ineligible = 0
+    for table in PRUNABLE_HISTORY_ORDER:
+        sql, identity_columns, kind = _SELECTIONS[table]
+        eligible: list[str] = []
+        for row in connection.execute(sql).fetchall():
+            identity = _row_identity(row, identity_columns)
+            try:
+                timestamp = _parse_timestamp(row["timestamp"])
+            except (TypeError, ValueError) as exc:
+                diagnostics.append(RetentionDiagnosticV1(
+                    table, PRUNABLE_TIMESTAMP_COLUMNS[table], identity, str(exc),
+                ))
+                ineligible += 1
+                continue
+            cutoff_name = "hot"
+            if kind == "raw":
+                cutoff_name = "forensic_raw" if row["retention_class"] == "forensic" else "raw_metadata"
+            if config.enabled and timestamp < _parse_timestamp(cutoffs[cutoff_name]):
+                eligible.append(identity)
+            else:
+                ineligible += 1
+        candidates[table] = tuple(eligible)
+    return candidates, diagnostics, ineligible
 
 
 def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Path | None = None,
@@ -322,33 +383,12 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
         "raw_metadata": _utc_text(evaluated - timedelta(days=config.raw_metadata_days)),
         "forensic_raw": _utc_text(evaluated - timedelta(days=config.forensic_raw_days)),
     }
-    candidates: dict[str, tuple[str, ...]] = {}
-    diagnostics: list[RetentionDiagnosticV1] = []
-    ineligible = 0
     run_id = str(uuid.uuid4())
     evaluation_text = _utc_text(evaluated)
     cutoff_json = json.dumps(cutoffs, sort_keys=True, separators=(",", ":"))
     connection.execute("BEGIN IMMEDIATE")
     try:
-        for table in PRUNABLE_HISTORY_ORDER:
-            sql, identity_columns, kind = _SELECTIONS[table]
-            eligible: list[str] = []
-            for row in connection.execute(sql).fetchall():
-                identity = _row_identity(row, identity_columns)
-                try:
-                    timestamp = _parse_timestamp(row["timestamp"])
-                except (TypeError, ValueError) as exc:
-                    diagnostics.append(RetentionDiagnosticV1(table, PRUNABLE_TIMESTAMP_COLUMNS[table], identity, str(exc)))
-                    ineligible += 1
-                    continue
-                cutoff_name = "hot"
-                if kind == "raw":
-                    cutoff_name = "forensic_raw" if row["retention_class"] == "forensic" else "raw_metadata"
-                if config.enabled and timestamp < _parse_timestamp(cutoffs[cutoff_name]):
-                    eligible.append(identity)
-                else:
-                    ineligible += 1
-            candidates[table] = tuple(eligible)
+        candidates, diagnostics, ineligible = _eligible_candidates(connection, config, cutoffs)
 
         eligible_count = sum(map(len, candidates.values()))
         candidate_identities = {
@@ -401,6 +441,17 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
             ).fetchone()[0]
             if has_dependents:
                 deletable["git_snapshots"].remove(snapshot_id)
+        # SQLite deliberately has restrictive (not cascading) event FKs.  Child
+        # identities are not present in Phase 5 evidence, so a covered event is
+        # safe only when no live canonical relationship points at it.
+        for event_id in tuple(deletable["events"]):
+            has_dependents = connection.execute(
+                "SELECT EXISTS(SELECT 1 FROM hook_events WHERE event_id=?) "
+                "OR EXISTS(SELECT 1 FROM correlation_edges WHERE event_id=? OR related_event_id=?)",
+                (event_id, event_id, event_id),
+            ).fetchone()[0]
+            if has_dependents:
+                deletable["events"].remove(event_id)
         planned_deletion_count = sum(map(len, deletable.values()))
         plan_status = "BLOCKED" if proof_unavailable or blocked_count else "VERIFIED"
         coverage_status = "BLOCKED" if proof_unavailable or blocked_count else ("COVERED" if covered_count == eligible_count else "UNCOVERED")
@@ -427,10 +478,213 @@ def plan_retention(connection: Any, config: RetentionConfig, *, archive_root: Pa
         run_id=run_id, evaluation_time=evaluation_text, policy_digest=digest,
         cutoffs=MappingProxyType(cutoffs), candidates_by_table=MappingProxyType(candidates),
         coverage_by_table=MappingProxyType(coverage), eligible_count=eligible_count,
+        planned_deletions_by_table=MappingProxyType({
+            table: tuple(sorted(identities)) for table, identities in deletable.items()
+        }),
         ineligible_count=ineligible, archive_coverage_status=coverage_status,
         covered_count=covered_count, uncovered_count=uncovered_count,
         blocked_count=blocked_count, planned_deletion_count=planned_deletion_count,
         status=plan_status, diagnostics=tuple(diagnostics),
+    )
+
+
+_DELETE_SQL: Final[Mapping[str, str]] = MappingProxyType({
+    "git_snapshot_correlations": "DELETE FROM git_snapshot_correlations WHERE correlation_id=?",
+    "git_snapshot_paths": (
+        "DELETE FROM git_snapshot_paths WHERE snapshot_observation_id=? AND path=?"
+    ),
+    "git_snapshots": "DELETE FROM git_snapshots WHERE snapshot_observation_id=?",
+    "correlation_edges": "DELETE FROM correlation_edges WHERE edge_id=?",
+    "hook_events": "DELETE FROM hook_events WHERE ingest_id=?",
+    "app_server_messages": "DELETE FROM app_server_messages WHERE message_id=?",
+    "raw_events": "DELETE FROM raw_events WHERE ingest_id=?",
+    "events": "DELETE FROM events WHERE event_id=?",
+})
+
+
+def _identity_parameters(table: str, identity: str) -> tuple[Any, ...]:
+    if table == "git_snapshot_paths":
+        value = json.loads(identity)
+        return value["snapshot_observation_id"], value["path"]
+    return (identity,)
+
+
+def run_retention(
+    connection: Any,
+    config: RetentionConfig,
+    *,
+    archive_root: Path | None = None,
+    evaluation_time: datetime | None = None,
+) -> RetentionRunV1:
+    """Plan, verify, and atomically prune only the plan's covered identities.
+
+    The caller controls SQLite's bounded ``busy_timeout``.  Archive proof is
+    completed by :func:`plan_retention` before this function opens the deletion
+    transaction.  The complete eligible candidate set is then recomputed under
+    the write lock; any drift blocks the run and requires a new plan.
+    """
+
+    plan = plan_retention(
+        connection, config, archive_root=archive_root, evaluation_time=evaluation_time,
+    )
+    empty_counts = MappingProxyType({table: 0 for table in PRUNABLE_HISTORY_ORDER})
+    if plan.status != "VERIFIED":
+        return RetentionRunV1(
+            plan.run_id, plan.status, plan.planned_deletion_count, 0, empty_counts,
+            connection.execute(
+                "SELECT failure_reason FROM retention_runs WHERE run_id=?", (plan.run_id,),
+            ).fetchone()[0],
+        )
+
+    planned = {
+        table: tuple(
+            row[0] for row in connection.execute(
+                "SELECT row_identity FROM retention_run_candidates "
+                "WHERE run_id=? AND table_name=? AND planned_delete=1 ORDER BY row_identity",
+                (plan.run_id, table),
+            )
+        )
+        for table in PRUNABLE_HISTORY_ORDER
+    }
+    durable_candidates = {
+        table: {
+            row["row_identity"]: row["coverage_status"]
+            for row in connection.execute(
+                "SELECT row_identity,coverage_status FROM retention_run_candidates "
+                "WHERE run_id=? AND table_name=? ORDER BY row_identity",
+                (plan.run_id, table),
+            )
+        }
+        for table in PRUNABLE_HISTORY_ORDER
+    }
+    if (
+        durable_candidates != {
+            table: dict(rows) for table, rows in (plan.coverage_by_table or {}).items()
+        }
+        or planned != dict(plan.planned_deletions_by_table or {})
+        or sum(map(len, planned.values())) != plan.planned_deletion_count
+    ):
+        reason = "durable candidate plan changed after verification; replan required"
+        connection.execute(
+            "UPDATE retention_runs SET status='BLOCKED',completed_at=?,failure_reason=? WHERE run_id=?",
+            (_utc_text(datetime.now(UTC)), reason, plan.run_id),
+        )
+        connection.commit()
+        return RetentionRunV1(
+            plan.run_id, "BLOCKED", plan.planned_deletion_count, 0, empty_counts, reason,
+        )
+    before_counts: dict[str, int] = {}
+    deleted: dict[str, int] = {table: 0 for table in PRUNABLE_HISTORY_ORDER}
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        current, _, _ = _eligible_candidates(connection, config, plan.cutoffs or {})
+        if current != dict(plan.candidates_by_table or {}):
+            raise RetentionCandidateChanged("candidate set changed after verification; replan required")
+        locked_candidates = {
+            table: {
+                row["row_identity"]: row["coverage_status"]
+                for row in connection.execute(
+                    "SELECT row_identity,coverage_status FROM retention_run_candidates "
+                    "WHERE run_id=? AND table_name=? ORDER BY row_identity",
+                    (plan.run_id, table),
+                )
+            }
+            for table in PRUNABLE_HISTORY_ORDER
+        }
+        locked_planned = {
+            table: tuple(
+                row[0] for row in connection.execute(
+                    "SELECT row_identity FROM retention_run_candidates "
+                    "WHERE run_id=? AND table_name=? AND planned_delete=1 ORDER BY row_identity",
+                    (plan.run_id, table),
+                )
+            )
+            for table in PRUNABLE_HISTORY_ORDER
+        }
+        if locked_candidates != durable_candidates or locked_planned != planned:
+            raise RetentionCandidateChanged(
+                "durable candidate plan changed before execution; replan required"
+            )
+
+        if archive_root is None:
+            raise RetentionCandidateChanged("archive root became unavailable after verification")
+        candidate_identities = {
+            dataset: {
+                identity
+                for table, identities in current.items()
+                if (mapping := _ARCHIVE_IDENTITIES.get(table)) is not None
+                and mapping[0] == dataset
+                for identity in identities
+            }
+            for dataset, _ in _ARCHIVE_IDENTITIES.values()
+        }
+        archive_identities, _, archive_failures = _verified_archive_identities(
+            connection, archive_root, candidate_identities,
+        )
+        for table, identities in planned.items():
+            mapping = _ARCHIVE_IDENTITIES.get(table)
+            if identities and (
+                mapping is None
+                or not set(identities) <= archive_identities[mapping[0]]
+            ):
+                detail = "; ".join(archive_failures) or "required identities are absent"
+                raise RetentionCandidateChanged(
+                    f"archive coverage changed after verification for {table}: {detail}"
+                )
+
+        transition = connection.execute(
+            "UPDATE retention_runs SET status='EXECUTING' WHERE run_id=? AND status='VERIFIED'",
+            (plan.run_id,),
+        )
+        if transition.rowcount != 1:
+            raise RetentionCandidateChanged("retention run is no longer VERIFIED")
+        for table in PRUNABLE_HISTORY_ORDER:
+            before_counts[table] = connection.execute(
+                f"SELECT count(*) FROM {table}"
+            ).fetchone()[0]
+            for identity in planned[table]:
+                cursor = connection.execute(
+                    _DELETE_SQL[table], _identity_parameters(table, identity),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(f"planned {table} row disappeared: {identity}")
+                deleted[table] += cursor.rowcount
+            after = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            if before_counts[table] - after != deleted[table]:
+                raise RuntimeError(f"post-delete count mismatch for {table}")
+            connection.execute(
+                "UPDATE retention_run_tables SET actual_deletes=? WHERE run_id=? AND table_name=?",
+                (deleted[table], plan.run_id, table),
+            )
+        deleted_count = sum(deleted.values())
+        if deleted_count != plan.planned_deletion_count:
+            raise RuntimeError("total post-delete count does not match verified plan")
+        completion = connection.execute(
+            "UPDATE retention_runs SET status='COMPLETED',completed_at=?,deleted_count=?,failure_reason=NULL "
+            "WHERE run_id=? AND status='EXECUTING'",
+            (_utc_text(datetime.now(UTC)), deleted_count, plan.run_id),
+        )
+        if completion.rowcount != 1:
+            raise RuntimeError("retention run did not remain EXECUTING through completion")
+        connection.commit()
+    except (sqlite3.Error, RuntimeError, TypeError, KeyError, ValueError) as exc:
+        connection.rollback()
+        reason = str(exc)
+        failure_status = "BLOCKED" if isinstance(exc, RetentionCandidateChanged) else "FAILED"
+        # This audit write is separate from the destructive transaction, so a
+        # rollback never leaves a misleading EXECUTING status or delete count.
+        connection.execute(
+            "UPDATE retention_runs SET status=?,completed_at=?,deleted_count=0,failure_reason=? "
+            "WHERE run_id=?",
+            (failure_status, _utc_text(datetime.now(UTC)), reason, plan.run_id),
+        )
+        connection.commit()
+        return RetentionRunV1(
+            plan.run_id, failure_status, plan.planned_deletion_count, 0, empty_counts, reason,
+        )
+    return RetentionRunV1(
+        plan.run_id, "COMPLETED", plan.planned_deletion_count,
+        sum(deleted.values()), MappingProxyType(deleted), None,
     )
 
 
