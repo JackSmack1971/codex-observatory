@@ -60,16 +60,24 @@ def test_mixed_run_deletes_only_covered_and_audits_counts(tmp_path: Path) -> Non
     assert (rerun.status, rerun.deleted_count) == ("COMPLETED", 0)
 
     assert retention_health(connection, enabled=True) == {
-        "status": "RETENTION_HEALTHY",
+        "status": "RETENTION_DEGRADED",
         "runs_total": 2,
+        "dry_runs_total": 0,
         "completed_runs_total": 2,
         "blocked_runs_total": 0,
         "failed_runs_total": 0,
+        "rows_eligible_total": 3,
+        "rows_verified_total": 1,
         "rows_deleted_total": 1,
+        "rows_uncovered_total": 2,
         "last_run": dict(connection.execute(
             "SELECT run_id,status,started_at,completed_at,deleted_count,failure_reason "
             "FROM retention_runs WHERE run_id=?", (rerun.run_id,),
         ).fetchone()),
+        "last_success": connection.execute(
+            "SELECT completed_at FROM retention_runs WHERE run_id=?", (rerun.run_id,),
+        ).fetchone()[0],
+        "last_error": None,
     }
 
 
@@ -78,7 +86,9 @@ def test_retention_health_has_independent_lifecycle_states(tmp_path: Path) -> No
     migrate(connection)
 
     assert retention_health(connection, enabled=False)["status"] == "RETENTION_DISABLED"
-    assert retention_health(connection, enabled=True)["status"] == "RETENTION_NOT_RUN"
+    never_run = retention_health(connection, enabled=True)
+    assert never_run["status"] == "RETENTION_READY"
+    assert never_run["last_success"] is None
     connection.execute(
         "INSERT INTO retention_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("failed", OLD, OLD, OLD, "sha256:test", "{}", "FAILED", 0, 0, 0, 0, 0, "test"),
@@ -86,7 +96,7 @@ def test_retention_health_has_independent_lifecycle_states(tmp_path: Path) -> No
     connection.commit()
 
     health = retention_health(connection, enabled=True)
-    assert health["status"] == "RETENTION_DEGRADED"
+    assert health["status"] == "RETENTION_FAILED"
     assert (health["runs_total"], health["failed_runs_total"], health["rows_deleted_total"]) == (1, 1, 0)
     connection.close()
 

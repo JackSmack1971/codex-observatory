@@ -101,19 +101,27 @@ JSON with exit status 2.
 
 `uv run python scripts/retention_gate.py` is the disposable retention lifecycle
 gate. It builds a new migrated SQLite database and archive in a temporary
-directory, publishes only a subset of the old events, verifies the registered
-manifest and Parquet digest chain, and runs destructive retention. The gate
-requires archived eligible rows to be deleted while an uncovered old row and a
-hot row remain live. It also requires the archived history to remain queryable,
-the completed audit and counters to survive a database reopen, and an identical
-rerun to complete with zero deletions. Success emits `PHASE_7_VERIFIED`.
+directory, publishes only a subset of the old events, verifies that the
+uncovered old row remains live, archives the remaining evidence, replans, and
+runs destructive retention. The gate requires every covered eligible row to be
+deleted while the hot row remains live. It also requires event, token, and Git
+history to remain queryable without duplicates, the completed audit and
+counters to survive a database reopen, and an identical rerun to complete with
+zero deletions. Success emits `PHASE_7_VERIFIED`.
 
 Doctor reports retention separately from archive health. Its states are
-`RETENTION_DISABLED`, `RETENTION_NOT_RUN`, `RETENTION_PENDING`,
-`RETENTION_HEALTHY`, and `RETENTION_DEGRADED`; detail includes total, completed,
-blocked, and failed runs, total deleted rows, and the latest durable run. A
-blocked or failed latest run degrades doctor, while disabled, not-yet-run, and
-pending states remain informational.
+`RETENTION_DISABLED`, `RETENTION_READY`, `RETENTION_BLOCKED`,
+`RETENTION_DEGRADED`, and `RETENTION_FAILED`. Detail independently reports dry,
+completed, blocked, and failed run counts; eligible, verified, deleted, and
+uncovered row totals; and the last run, success, and error. A never-run system
+is ready but has a null `last_success`, so it is not reported as verified
+execution.
+
+Historical identity queries use a stable hot/cold union: immutable Parquet
+rows are merged with SQLite rows by the dataset's canonical identity, SQLite
+wins during archive/live overlap, and results are ordered by timestamp and
+identity. Event counts, token totals, and Git snapshot identity queries
+therefore remain continuous across pruning without double counting overlap.
 
 Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 
