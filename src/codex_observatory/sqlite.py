@@ -364,6 +364,38 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        6,
+        """
+        CREATE TABLE retention_runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            evaluation_time TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            cutoff_configuration TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('PLANNED','VERIFIED','EXECUTING','COMPLETED','BLOCKED','FAILED')),
+            candidate_count INTEGER NOT NULL CHECK(candidate_count >= 0),
+            covered_count INTEGER NOT NULL CHECK(covered_count >= 0),
+            uncovered_count INTEGER NOT NULL CHECK(uncovered_count >= 0),
+            planned_delete_count INTEGER NOT NULL CHECK(planned_delete_count >= 0),
+            deleted_count INTEGER NOT NULL CHECK(deleted_count >= 0),
+            failure_reason TEXT
+        );
+        CREATE INDEX idx_retention_runs_status_started ON retention_runs(status,started_at);
+        CREATE TABLE retention_run_tables (
+            run_id TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            candidate_rows INTEGER NOT NULL CHECK(candidate_rows >= 0),
+            covered_rows INTEGER NOT NULL CHECK(covered_rows >= 0),
+            uncovered_rows INTEGER NOT NULL CHECK(uncovered_rows >= 0),
+            planned_deletes INTEGER NOT NULL CHECK(planned_deletes >= 0),
+            actual_deletes INTEGER NOT NULL CHECK(actual_deletes >= 0),
+            PRIMARY KEY(run_id,table_name),
+            FOREIGN KEY(run_id) REFERENCES retention_runs(run_id)
+        );
+        """,
+    ),
 )
 
 

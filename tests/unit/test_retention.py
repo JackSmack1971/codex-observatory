@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,10 +18,10 @@ from codex_observatory.retention import (
     RetentionTableClass,
     render_table_classification_markdown,
 )
-from codex_observatory.sqlite import connect, migrate
+from codex_observatory.sqlite import MIGRATIONS, connect, migrate
 
 
-def test_production_registry_matches_migrations_one_through_five(tmp_path: Path) -> None:
+def test_production_registry_matches_migrations_one_through_six(tmp_path: Path) -> None:
     connection = connect(tmp_path / "inventory.db")
     migrate(connection)
     rows = connection.execute(
@@ -31,8 +33,114 @@ def test_production_registry_matches_migrations_one_through_five(tmp_path: Path)
     actual_application_tables = all_tables - sqlite_internal_tables
 
     assert set(TABLE_CLASSIFICATIONS) == actual_application_tables
-    assert all(isinstance(value, RetentionTableClass) for value in TABLE_CLASSIFICATIONS.values())
+    assert all(
+        isinstance(value, RetentionTableClass)
+        for value in TABLE_CLASSIFICATIONS.values()
+    )
     assert len(TABLE_CLASSIFICATIONS) == len(actual_application_tables)
+    connection.close()
+
+
+def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
+    phase6 = connect(tmp_path / "phase6.db")
+    phase6.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, checksum TEXT NOT NULL UNIQUE)"
+    )
+    for version, sql in MIGRATIONS[:5]:
+        phase6.executescript(sql)
+        phase6.execute(
+            "INSERT INTO schema_migrations VALUES (?, 'now', ?)",
+            (version, hashlib.sha256(sql.encode()).hexdigest()),
+        )
+    phase6.commit()
+
+    fresh = connect(tmp_path / "fresh.db")
+    migrate(phase6)
+    migrate(fresh)
+    migrate(phase6)
+
+    def schema(connection: sqlite3.Connection) -> list[tuple[str, str, str]]:
+        return [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT type,name,sql FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            )
+        ]
+
+    assert schema(phase6) == schema(fresh)
+    assert [
+        row[0]
+        for row in phase6.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )
+    ] == [1, 2, 3, 4, 5, 6]
+
+
+def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
+    path = tmp_path / "audit.db"
+    connection = connect(path)
+    migrate(connection)
+    with connection:
+        connection.execute(
+            "INSERT INTO retention_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "run-1",
+                "2026-09-21T00:00:00Z",
+                None,
+                "2026-09-21T00:00:00Z",
+                "sha256:policy",
+                '{"cutoff":"30d"}',
+                "PLANNED",
+                5,
+                4,
+                1,
+                4,
+                0,
+                None,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO retention_run_tables VALUES (?,?,?,?,?,?,?)",
+            ("run-1", "events", 5, 4, 1, 4, 0),
+        )
+    connection.close()
+
+    reopened = connect(path)
+    migrate(reopened)
+    assert tuple(
+        reopened.execute(
+            "SELECT status,candidate_count,covered_count,uncovered_count,planned_delete_count,deleted_count "
+            "FROM retention_runs WHERE run_id='run-1'"
+        ).fetchone()
+    ) == ("PLANNED", 5, 4, 1, 4, 0)
+    assert tuple(
+        reopened.execute(
+            "SELECT table_name,candidate_rows,covered_rows,uncovered_rows,planned_deletes,actual_deletes "
+            "FROM retention_run_tables WHERE run_id='run-1'"
+        ).fetchone()
+    ) == ("events", 5, 4, 1, 4, 0)
+    reopened.close()
+
+
+def test_retention_audit_constraints_reject_invalid_evidence(tmp_path: Path) -> None:
+    connection = connect(tmp_path / "constraints.db")
+    migrate(connection)
+    insert_run = (
+        "INSERT INTO retention_runs VALUES "
+        "(?, '2026-09-21T00:00:00Z', NULL, '2026-09-21T00:00:00Z', "
+        "'sha256:policy', '{}', ?, ?, 0, 0, 0, 0, NULL)"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(insert_run, ("invalid-status", "UNKNOWN", 0))
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(insert_run, ("negative-count", "PLANNED", -1))
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO retention_run_tables VALUES (?,?,?,?,?,?,?)",
+            ("missing-run", "events", 0, 0, 0, 0, 0),
+        )
     connection.close()
 
 
