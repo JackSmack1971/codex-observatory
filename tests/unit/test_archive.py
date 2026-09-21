@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ def _db(tmp_path: Path):
     return connection
 
 
-def _event(connection, event_id: str, timestamp: str, source: str = "hook", category: str = "tool_observation", status: str | None = "ok", repo_id: str = "repo-1") -> None:
+def _event(connection, event_id: str, timestamp: str, source: str = "hook", category: str = "tool_observation", status: str | None = "ok", repo_id: Any = "repo-1") -> None:
     connection.execute("""INSERT INTO events(event_id,event_time,event_time_unix_nano,observed_at,source_class,fact_type,stability,source_event,source_instance,source_version,raw_event_sha256,adapter_version,category,name,status,attributes_json)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (event_id, timestamp, None, timestamp, source, "native", "documented", "event", "local", None, "sha256:source", "test", category, category, status, json.dumps({"repo_id": repo_id, "safe": True})))
 
@@ -150,6 +151,52 @@ def test_historical_aggregates_are_identical_across_archive_and_prune(tmp_path: 
     assert results() == before
     assert results("2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z")["count"] == 1
     assert results("2026-01-01T23:00:00-01:00", "2026-01-03T00:00:00-01:00")["count"] == 2
+    connection.close()
+
+
+def test_repo_id_grouping_normalizes_every_json_value_shape(tmp_path: Path) -> None:
+    connection = _db(tmp_path)
+    root = tmp_path / "archive"
+    values = ["repo", None, ["org", 1], {"z": 2, "a": 1}]
+    for index, value in enumerate(values):
+        _event(connection, f"cold-{index}", f"2026-01-0{index + 1}T00:00:00Z", repo_id=value)
+    connection.commit()
+    export_dataset(connection, root, "events")
+    connection.execute("DELETE FROM events")
+    _event(
+        connection, "hot-object", "2026-01-05T00:00:00Z",
+        repo_id={"a": 1, "z": 2},
+    )
+    connection.commit()
+
+    assert AnalyticsService(connection, root).events_by("repo_id") == [
+        {"repo_id": '["org",1]', "count": 1},
+        {"repo_id": 'repo', "count": 1},
+        {"repo_id": '{"a":1,"z":2}', "count": 2},
+        {"repo_id": None, "count": 1},
+    ]
+    connection.close()
+
+
+def test_grouped_analytics_do_not_materialize_archived_event_population(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _db(tmp_path)
+    root = tmp_path / "archive"
+    for index in range(250):
+        _event(connection, f"cold-{index}", "2026-01-01T00:00:00Z")
+    connection.commit()
+    export_dataset(connection, root, "events")
+    connection.execute("DELETE FROM events")
+    connection.commit()
+    service = AnalyticsService(connection, root)
+
+    def fail_population(*args: object, **kwargs: object) -> dict[str, dict[str, Any]]:
+        raise AssertionError("grouped analytics materialized archived events in Python")
+
+    monkeypatch.setattr(service, "_event_population", fail_population)
+    assert service.events_by("source_class") == [{"source_class": "hook", "count": 250}]
+    assert service.tool_calls() == [{"status": "ok", "count": 250}]
     connection.close()
 
 

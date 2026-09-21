@@ -92,16 +92,14 @@ class AnalyticsService:
     def events_by(self, column: str, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
         if column not in {"source_class", "category", "repo_id"}:
             raise ValueError("unsupported analytics grouping")
-        counts: dict[Any, int] = {}
-        for row in self._event_population(f"events_by_{column}", start, end).values():
-            if column == "repo_id":
-                try:
-                    value = json.loads(row["attributes_json"]).get("repo_id")
-                except (AttributeError, TypeError, ValueError):
-                    value = None
-            else:
-                value = row[column]
-            counts[value] = counts.get(value, 0) + 1
+        value_sql = (
+            "CAST(json_extract(attributes_json, '$.repo_id') AS VARCHAR)"
+            if column == "repo_id" else column
+        )
+        counts = self._grouped_event_counts(
+            f"events_by_{column}", value_sql, start, end,
+            normalize=_normalize_repo_id if column == "repo_id" else None,
+        )
         return [
             {column: value, "count": count}
             for value, count in sorted(
@@ -165,18 +163,79 @@ class AnalyticsService:
         ]
 
     def tool_calls(self, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
-        counts: dict[str | None, int] = {}
-        for row in self._event_population("tool_calls", start, end).values():
-            if "tool" not in row["category"].lower() and "tool" not in row["name"].lower():
-                continue
-            status = row["status"]
-            counts[status] = counts.get(status, 0) + 1
+        counts = self._grouped_event_counts(
+            "tool_calls", "status", start, end,
+            predicate="(contains(lower(category), 'tool') OR contains(lower(name), 'tool'))",
+        )
         return [
             {"status": status, "count": count}
             for status, count in sorted(
                 counts.items(), key=lambda item: (item[0] is None, str(item[0])),
             )
         ]
+
+    def _grouped_event_counts(
+        self,
+        query_name: str,
+        value_sql: str,
+        start: str | None,
+        end: str | None,
+        *,
+        predicate: str = "TRUE",
+        normalize: Any | None = None,
+    ) -> dict[Any, int]:
+        """Aggregate canonical events without transferring cold event rows to Python."""
+
+        columns = "event_id,event_seq,event_time,source_class,category,name,status,attributes_json"
+        hot_where, hot_params = _sqlite_time_filter("event_time", start, end)
+        hot = self.connection.execute(
+            f"SELECT {columns.replace(',event_seq', '')} FROM events WHERE 1=1 " + hot_where,
+            hot_params,
+        ).fetchall()
+        counts: dict[Any, int] = {}
+
+        def add(value: Any, count: int = 1) -> None:
+            key = normalize(value) if normalize else value
+            counts[key] = counts.get(key, 0) + count
+
+        for row in hot:
+            if predicate != "TRUE" and not _is_tool_event(row["category"], row["name"]):
+                continue
+            add(_repo_id_json(row["attributes_json"]) if normalize else row[value_sql], 1)
+
+        try:
+            paths = published_paths(self.connection, self.archive_root, "events")
+            if paths:
+                db = duckdb.connect(":memory:")
+                try:
+                    db.execute("CREATE TABLE hot_event_ids(event_id VARCHAR PRIMARY KEY)")
+                    if hot:
+                        db.executemany(
+                            "INSERT INTO hot_event_ids VALUES (?)",
+                            [(row["event_id"],) for row in hot],
+                        )
+                    quoted = ",".join("'" + str(path).replace("'", "''") + "'" for path in paths)
+                    where, params = _time_filter("event_time", start, end)
+                    rows = db.execute(
+                        f"""WITH cold AS (
+                            SELECT {columns} FROM read_parquet([{quoted}], union_by_name=true,
+                                hive_partitioning=true) WHERE 1=1 {where}
+                            QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY event_seq DESC)=1
+                        )
+                        SELECT {value_sql} AS grouping_value, count(*) AS count
+                        FROM cold ANTI JOIN hot_event_ids USING (event_id)
+                        WHERE {predicate} GROUP BY grouping_value""",
+                        params,
+                    ).fetchall()
+                    for value, count in rows:
+                        add(value, int(count))
+                finally:
+                    db.close()
+            self._health(True, query_name, None)
+        except Exception as exc:
+            self._health(False, query_name, str(exc))
+            raise
+        return counts
 
 
 def _time_filter(column: str, start: str | None, end: str | None) -> tuple[str, list[str]]:
@@ -210,3 +269,31 @@ def _sqlite_time_filter(
 ) -> tuple[str, list[str]]:
     where, params = _time_filter(column, start, end)
     return where, params
+
+
+def _repo_id_json(attributes_json: Any) -> str | None:
+    try:
+        attributes = json.loads(attributes_json)
+        return json.dumps(
+            attributes.get("repo_id"), separators=(",", ":"), ensure_ascii=False,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _normalize_repo_id(value_json: Any) -> str | None:
+    """Return a hashable, deterministic representation of a JSON repo id."""
+
+    try:
+        value = json.loads(value_json)
+    except (TypeError, ValueError):
+        return None
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _is_tool_event(category: str, name: str) -> bool:
+    return "tool" in category.lower() or "tool" in name.lower()
