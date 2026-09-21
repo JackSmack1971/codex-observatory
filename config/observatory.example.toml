@@ -45,6 +45,7 @@ persist_raw_wire_payloads = false
 processing_spool_max_hours = 1
 
 [retention]
+enabled = true
 hot_days = 30
 raw_metadata_days = 7
 forensic_raw_days = 7

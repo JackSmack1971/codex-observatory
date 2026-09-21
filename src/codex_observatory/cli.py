@@ -62,7 +62,10 @@ def _parser() -> argparse.ArgumentParser:
     analytics.add_argument("--start", default=None)
     analytics.add_argument("--end", default=None)
     retention = commands.add_parser("retention")
-    retention.add_subparsers(dest="retention_command").add_parser("run")
+    retention_commands = retention.add_subparsers(dest="retention_command")
+    retention_plan = retention_commands.add_parser("plan")
+    retention_plan.add_argument("--db", type=Path, default=None)
+    retention_plan.add_argument("--config", type=Path, default=None)
     schema = commands.add_parser("schema")
     schema_subcommands = schema.add_subparsers(dest="schema_command")
     schema_subcommands.add_parser("capture")
@@ -243,6 +246,21 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 output = service.tool_calls(args.start, args.end)
             print(json.dumps(output, indent=2, default=str))
+            return 0
+        finally:
+            connection.close()
+    if args.command == "retention":
+        if args.retention_command != "plan":
+            print(json.dumps({"status": "NOT_IMPLEMENTED", "command": "retention"}))
+            return 1
+        from .retention import plan_retention
+        from .sqlite import connect, migrate
+        config = load_config(args.config)
+        db = args.db or config.storage.sqlite_path or resolve_paths().sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection)
+            print(json.dumps(plan_retention(connection, config.retention).as_dict(), indent=2))
             return 0
         finally:
             connection.close()

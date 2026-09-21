@@ -16,12 +16,13 @@ from codex_observatory.retention import (
     RetentionPlanV1,
     RetentionPolicyV1,
     RetentionTableClass,
+    plan_retention,
     render_table_classification_markdown,
 )
 from codex_observatory.sqlite import MIGRATIONS, connect, migrate
 
 
-def test_production_registry_matches_migrations_one_through_six(tmp_path: Path) -> None:
+def test_production_registry_matches_migrations(tmp_path: Path) -> None:
     connection = connect(tmp_path / "inventory.db")
     migrate(connection)
     rows = connection.execute(
@@ -74,7 +75,7 @@ def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
         for row in phase6.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )
-    ] == [1, 2, 3, 4, 5, 6]
+    ] == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
@@ -187,3 +188,156 @@ def test_policy_accepts_only_validated_timezone_aware_datetimes() -> None:
         policy.eligible("invalid")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="timezone-aware"):
         RetentionPolicyV1(cutoff=naive_cutoff)
+
+
+def _raw(connection: sqlite3.Connection, identity: str, timestamp: str, retention_class: str = "metadata") -> None:
+    connection.execute(
+        "INSERT INTO raw_events(ingest_id,received_at,source,source_instance,source_event_type,source_version,content_type,content_encoding,payload_encoding,payload_sha256,payload_size,payload_ref,payload,parse_status,error_code,error_message,retention_class,duplicate_of) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (identity, timestamp, "hook", "test", "test", None, "application/json", None,
+         "json", f"sha256:{identity}", 2, None, None, "accepted", None, None, retention_class, None),
+    )
+
+
+def _event(connection: sqlite3.Connection, identity: str, timestamp: str) -> None:
+    connection.execute(
+        "INSERT INTO events(event_id,event_time,observed_at,source_class,fact_type,stability,source_event,source_instance,raw_event_sha256,adapter_version,category,name,attributes_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (identity, timestamp, timestamp, "HOOK", "OBSERVED", "OBSERVED", "test", "test",
+         f"sha256:{identity}", "v1", "test", "test", "{}"),
+    )
+
+
+def test_plan_is_deterministic_dry_run_across_tables_and_persists(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    path = tmp_path / "plan.db"
+    connection = connect(path)
+    migrate(connection)
+    # raw metadata uses 7 days, forensic raw uses 2, while canonical events use hot_days.
+    _raw(connection, "raw-expired", "2026-09-10T00:00:00Z")
+    _raw(connection, "raw-hot", "2026-09-19T00:00:00Z")
+    _raw(connection, "raw-forensic-expired", "2026-09-18T23:59:59Z", "forensic")
+    _event(connection, "event-expired", "2026-08-21T23:59:59Z")
+    _event(connection, "event-boundary", "2026-08-22T00:00:00Z")
+    _event(connection, "event-hot", "2026-09-20T00:00:00Z")
+    connection.commit()
+    before = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("raw_events", "events")}
+    statements: list[str] = []
+    connection.set_trace_callback(statements.append)
+
+    plan = plan_retention(
+        connection,
+        RetentionConfig(hot_days=30, raw_metadata_days=7, forensic_raw_days=2),
+        evaluation_time=datetime(2026, 9, 21, tzinfo=UTC),
+    )
+
+    assert plan.evaluation_time == "2026-09-21T00:00:00Z"
+    assert plan.cutoffs == {
+        "hot": "2026-08-22T00:00:00Z",
+        "raw_metadata": "2026-09-14T00:00:00Z",
+        "forensic_raw": "2026-09-19T00:00:00Z",
+    }
+    assert plan.candidates_by_table["raw_events"] == ("raw-expired", "raw-forensic-expired")
+    assert len(plan.candidates_by_table["events"]) == 1
+    assert plan.eligible_count == 3
+    assert plan.ineligible_count == 3
+    assert plan.archive_coverage_status == "NOT_YET_VERIFIED"
+    assert plan.planned_deletion_count == 0
+    assert not any(statement.lstrip().upper().startswith("DELETE") for statement in statements)
+    after = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in before}
+    assert after == before
+    run_id = plan.run_id
+    connection.close()
+
+    reopened = connect(path)
+    migrate(reopened)
+    assert reopened.execute("SELECT status FROM retention_runs WHERE run_id=?", (run_id,)).fetchone()[0] == "PLANNED"
+    assert [row[0] for row in reopened.execute(
+        "SELECT row_identity FROM retention_run_candidates WHERE run_id=? ORDER BY table_name,row_identity", (run_id,)
+    )] == ["1", "raw-expired", "raw-forensic-expired"]
+
+
+def test_plan_disabled_and_empty_database_have_no_candidates(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    connection = connect(tmp_path / "disabled.db")
+    migrate(connection)
+    _event(connection, "old", "2000-01-01T00:00:00Z")
+    connection.commit()
+    disabled = plan_retention(connection, RetentionConfig(enabled=False), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    assert disabled.eligible_count == 0
+    assert disabled.ineligible_count == 1
+
+    empty = connect(tmp_path / "empty.db")
+    migrate(empty)
+    no_rows = plan_retention(empty, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    assert no_rows.eligible_count == no_rows.ineligible_count == 0
+
+
+def test_composite_candidate_identities_are_canonical_and_collision_free(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    connection = connect(tmp_path / "composite.db")
+    migrate(connection)
+    connection.execute("INSERT INTO repositories VALUES('repo','/repo',NULL,0,'2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')")
+    connection.execute("INSERT INTO worktrees VALUES('tree','repo','/repo','2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')")
+    snapshot = ("digest", "repo", "tree", None, None, 0, "unborn", None, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                "2020-01-01T00:00:00Z", "v1", "evidence")
+    connection.execute("INSERT INTO git_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("a", *snapshot))
+    connection.execute("INSERT INTO git_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("a:b", *snapshot))
+    connection.execute("INSERT INTO git_snapshot_paths VALUES('a','b:c','M','unstaged',NULL,NULL,NULL,0)")
+    connection.execute("INSERT INTO git_snapshot_paths VALUES('a:b','c','M','unstaged',NULL,NULL,NULL,0)")
+    connection.commit()
+
+    plan = plan_retention(connection, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+
+    assert plan.candidates_by_table["git_snapshot_paths"] == (
+        '{"path":"b:c","snapshot_observation_id":"a"}',
+        '{"path":"c","snapshot_observation_id":"a:b"}',
+    )
+    assert connection.execute(
+        "SELECT count(*) FROM retention_run_candidates WHERE run_id=? AND table_name='git_snapshot_paths'",
+        (plan.run_id,),
+    ).fetchone()[0] == 2
+
+
+def test_plan_holds_one_write_snapshot_until_audit_is_persisted(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    path = tmp_path / "snapshot.db"
+    planner = connect(path)
+    migrate(planner)
+    writer = connect(path)
+    writer.execute("PRAGMA busy_timeout=0")
+    blocked: list[str] = []
+
+    def attempt_concurrent_write(statement: str) -> None:
+        if not statement.startswith("SELECT ") or blocked:
+            return
+        try:
+            _event(writer, "concurrent", "2000-01-01T00:00:00Z")
+        except sqlite3.OperationalError as exc:
+            blocked.append(str(exc))
+            writer.rollback()
+
+    planner.set_trace_callback(attempt_concurrent_write)
+    plan = plan_retention(planner, RetentionConfig(), evaluation_time=datetime(2026, 9, 21, tzinfo=UTC))
+    planner.set_trace_callback(None)
+
+    assert blocked == ["database is locked"]
+    assert plan.eligible_count == 0
+    _event(writer, "after-plan", "2000-01-01T00:00:00Z")
+    writer.commit()
+    assert writer.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+
+
+def test_plan_rejects_caller_owned_transaction(tmp_path: Path) -> None:
+    from codex_observatory.config import RetentionConfig
+
+    connection = connect(tmp_path / "transaction.db")
+    migrate(connection)
+    connection.execute("BEGIN")
+    with pytest.raises(ValueError, match="no active transaction"):
+        plan_retention(connection, RetentionConfig())
+    assert connection.in_transaction
+    connection.rollback()

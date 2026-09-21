@@ -22,6 +22,19 @@ and is guarded by a consistency test. SQLite-internal tables (currently
 `sqlite_sequence`) are intentionally excluded; `schema_migrations` is application
 audit state and is included.
 
+## Phase 7.3 dry-run planning
+
+`codex-observatory retention plan` captures one UTC evaluation time, resolves
+the configured hot and raw cutoffs, records every eligible row identity, and
+persists a `PLANNED` audit run. Planning never verifies archive coverage and
+never deletes data: coverage is reported as `NOT_YET_VERIFIED`, and planned
+deletions remain zero. A timestamp exactly equal to its cutoff is ineligible.
+Candidate selection and audit persistence occur in one `BEGIN IMMEDIATE`
+transaction, so all tables are evaluated from one database snapshot. Composite
+primary keys are recorded as canonical JSON objects rather than delimiter-joined
+text. The optional `--config` argument accepts a complete observatory TOML file,
+including a `[retention]` table as shown by `config/retention.example.toml`.
+
 <!-- TABLE_CLASSIFICATIONS:START -->
 | Table | Classification |
 | --- | --- |
@@ -51,6 +64,7 @@ audit state and is included.
 | `analytics_health` | `CONTROL_STATE` |
 | `retention_runs` | `AUDIT` |
 | `retention_run_tables` | `AUDIT` |
+| `retention_run_candidates` | `AUDIT` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 
 `app_server_token_usage` is updated in place for a `(thread_id, turn_id)` and

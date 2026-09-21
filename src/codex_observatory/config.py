@@ -97,6 +97,7 @@ class PrivacyConfig(StrictModel):
 
 
 class RetentionConfig(StrictModel):
+    enabled: bool = True
     hot_days: Annotated[int, Field(ge=0)] = 30
     raw_metadata_days: Annotated[int, Field(ge=0)] = 7
     forensic_raw_days: Annotated[int, Field(ge=0)] = 7
