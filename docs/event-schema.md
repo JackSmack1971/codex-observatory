@@ -1,6 +1,7 @@
 # Event schema v1
 
-This document freezes the Phase-0 vocabulary for later implementations. It does not implement ingestion or storage.
+This document freezes the v1 vocabulary. Phase 1 implements OTLP ingestion and
+SQLite persistence without changing these boundary objects.
 
 ## Boundary objects
 
@@ -17,4 +18,7 @@ This document freezes the Phase-0 vocabulary for later implementations. It does 
 - Minimal mode persists neither prompts nor raw tool arguments/output; those values may exist only in the short-lived processing spool while being normalized.
 - Raw wire bodies are durable only with explicit `privacy.mode = "forensic"`.
 - Correlation uncertainty is represented, never hidden by a guessed join.
-- This repository does not yet define a database schema or collector behavior.
+- Phase 1 stores raw-envelope metadata and canonical event fields in a
+  migration-controlled SQLite schema. OTLP transport decoding and semantic
+  normalization remain separate modules; unknown native attributes are carried
+  in the canonical attributes payload.

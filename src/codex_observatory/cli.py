@@ -17,8 +17,15 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-observatory", description="Local Codex telemetry observatory")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
-    for name in ("init", "serve", "migrate", "admin-sync", "verify-install"):
+    for name in ("init", "migrate", "admin-sync", "verify-install"):
         commands.add_parser(name)
+    serve = commands.add_parser("serve")
+    serve.add_argument("--db", type=Path, default=None)
+    health = commands.add_parser("health")
+    health.add_argument("--db", type=Path, default=None)
+    query = commands.add_parser("query")
+    query.add_argument("--db", type=Path, default=None)
+    query.add_argument("--limit", type=int, default=20)
     configure = commands.add_parser("configure-codex")
     configure.add_argument("action", choices=("--check", "--print", "--apply"))
     archive = commands.add_parser("archive")
@@ -54,10 +61,10 @@ def _doctor() -> int:
     frontend_build = Path("frontend/dist/index.html")
     checks.append({"name": "frontend_build", "status": "ok" if frontend_build.is_file() else "not_configured", "detail": str(frontend_build)})
     checks.extend([
-        {"name": "otel_config", "status": "not_implemented", "detail": "collector not implemented in Phase 0"},
+        {"name": "otel_config", "status": "ok", "detail": "OTLP receiver available; Codex exporter configuration remains manual"},
         {"name": "hooks", "status": "not_implemented", "detail": "hook collector not implemented in Phase 0"},
         {"name": "hook_spool", "status": "not_configured", "detail": "runtime directories are not created by doctor"},
-        {"name": "sqlite", "status": "not_implemented", "detail": "durable storage begins in Phase 1"},
+        {"name": "sqlite", "status": "ok", "detail": "WAL migration-backed live store available"},
         {"name": "app_server_schema", "status": "not_configured", "detail": "no compatibility registry populated"},
         {"name": "parquet", "status": "not_implemented", "detail": "archive begins in Phase 8"},
         {"name": "clock", "status": "ok", "detail": "system clock readable"},
@@ -78,6 +85,26 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - doctor must report failures as data.
             print(json.dumps({"status": "degraded", "checks": [{"name": "doctor", "status": "error", "detail": str(exc)}]}))
             return 1
+    if args.command in {"health", "query"}:
+        from .sqlite import connect, migrate
+
+        db = args.db or resolve_paths().sqlite_path
+        connection = connect(db)
+        migrate(connection)
+        if args.command == "health":
+            row = connection.execute("SELECT * FROM collector_health WHERE collector='otlp'").fetchone()
+            print(json.dumps(dict(row) if row else {"collector": "otlp", "status": "healthy"}, indent=2))
+        else:
+            rows = connection.execute("SELECT * FROM events ORDER BY event_seq DESC LIMIT ?", (max(1, min(args.limit, 1000)),)).fetchall()
+            print(json.dumps([dict(row) for row in rows], indent=2))
+        return 0
+    if args.command == "serve":
+        import uvicorn
+
+        from .app import create_app
+
+        uvicorn.run(create_app(args.db or resolve_paths().sqlite_path), host="127.0.0.1", port=8765)
+        return 0
     if args.command is None:
         _parser().print_help()
         return 0

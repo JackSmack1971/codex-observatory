@@ -4,9 +4,9 @@ The observatory is read-only with respect to Codex execution. No collector or da
 
 ## Sources
 
-| Source | Role | Authority | Phase-0 state |
+| Source | Role | Authority | Phase-1 state |
 | --- | --- | --- | --- |
-| Codex OTel | logs, metrics, traces | asynchronous telemetry | not implemented |
+| Codex OTel | logs, metrics, traces | asynchronous telemetry | OTLP/HTTP receiver implemented |
 | Lifecycle hooks | rich local lifecycle facts | hook payload plus receipt metadata | not implemented |
 | App Server | persisted thread reconciliation | versioned JSON/TS schema | not implemented |
 | Git | repository snapshots | command output at a repository cwd | not implemented |
@@ -16,4 +16,4 @@ Each source must preserve its observed version and provenance. A live contract t
 
 ## Failure behavior
 
-Collectors must be independently stoppable and must not block Codex execution. Later phases will use bounded queues, explicit dropped/rejected counts, and a single SQLite writer. Those mechanisms are contracts, not Phase-0 implementations.
+Collectors must be independently stoppable and must not block Codex execution. Phase 1 records accepted and rejected OTLP evidence in SQLite; later phases will add bounded queues, explicit dropped counts, and a dedicated writer actor.

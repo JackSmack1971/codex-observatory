@@ -1,0 +1,177 @@
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import cast
+
+from .models import CanonicalEvent, RawEnvelope
+
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (
+        1,
+        """
+        CREATE TABLE raw_events (
+            ingest_id TEXT PRIMARY KEY,
+            received_at TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_instance TEXT NOT NULL,
+            source_event_type TEXT NOT NULL,
+            source_version TEXT,
+            content_type TEXT NOT NULL,
+            content_encoding TEXT,
+            payload_encoding TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            payload_size INTEGER NOT NULL,
+            payload_ref TEXT,
+            payload BLOB,
+            parse_status TEXT NOT NULL,
+            error_code TEXT,
+            error_message TEXT,
+            retention_class TEXT NOT NULL,
+            duplicate_of TEXT
+        );
+        CREATE INDEX idx_raw_digest ON raw_events(source_event_type, payload_sha256);
+        CREATE TABLE events (
+            event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_time TEXT NOT NULL,
+            event_time_unix_nano INTEGER,
+            observed_at TEXT NOT NULL,
+            source_class TEXT NOT NULL,
+            fact_type TEXT NOT NULL,
+            stability TEXT NOT NULL,
+            source_event TEXT NOT NULL,
+            source_instance TEXT NOT NULL,
+            source_version TEXT,
+            raw_event_sha256 TEXT NOT NULL,
+            adapter_version TEXT NOT NULL,
+            session_id TEXT, thread_id TEXT, turn_id TEXT, item_id TEXT,
+            call_id TEXT, trace_id TEXT, span_id TEXT, operation_id TEXT,
+            category TEXT NOT NULL, name TEXT NOT NULL, status TEXT,
+            attributes_json TEXT NOT NULL
+        );
+        CREATE INDEX idx_events_time ON events(event_time, event_seq);
+        CREATE INDEX idx_events_name ON events(category, name, event_time);
+        CREATE TABLE collector_health (
+            collector TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            received_total INTEGER NOT NULL DEFAULT 0,
+            normalized_total INTEGER NOT NULL DEFAULT 0,
+            rejected_total INTEGER NOT NULL DEFAULT 0,
+            unknown_event_total INTEGER NOT NULL DEFAULT 0,
+            persistence_error_total INTEGER NOT NULL DEFAULT 0,
+            last_success TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+)
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=5.0, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=5000")
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA synchronous=NORMAL")
+    return connection
+
+
+def migrate(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, checksum TEXT NOT NULL UNIQUE)")
+    for version, sql in MIGRATIONS:
+        checksum = hashlib.sha256(sql.encode()).hexdigest()
+        row = connection.execute("SELECT checksum FROM schema_migrations WHERE version = ?", (version,)).fetchone()
+        if row:
+            if row[0] != checksum:
+                raise RuntimeError(f"migration checksum mismatch for version {version}")
+            continue
+        with connection:
+            for statement in (part.strip() for part in sql.split(";")):
+                if statement:
+                    connection.execute(statement)
+            connection.execute("INSERT INTO schema_migrations(version, applied_at, checksum) VALUES (?, ?, ?)", (version, utc_now(), checksum))
+
+
+def _health_status(received: int, rejected: int, last_error: str | None) -> str:
+    if last_error and received == rejected:
+        return "failed"
+    if rejected or last_error:
+        return "degraded"
+    return "healthy"
+
+
+def persist(
+    connection: sqlite3.Connection,
+    envelope: RawEnvelope,
+    events: Iterable[CanonicalEvent],
+    *,
+    unknown_count: int = 0,
+    normalization_error: str | None = None,
+) -> int:
+    event_list = list(events)
+    prior = connection.execute(
+        "SELECT ingest_id FROM raw_events WHERE source_event_type = ? AND payload_sha256 = ? AND parse_status IN ('accepted', 'duplicate') ORDER BY rowid LIMIT 1",
+        (envelope.source_event_type, envelope.payload_sha256),
+    ).fetchone()
+    status = "duplicate" if prior else envelope.parse_status
+    with connection:
+        connection.execute(
+            "INSERT INTO raw_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (envelope.ingest_id, envelope.received_at, envelope.source, envelope.source_instance, envelope.source_event_type,
+             envelope.source_version, envelope.content_type, envelope.content_encoding, envelope.payload_encoding,
+             envelope.payload_sha256, envelope.payload_size, envelope.payload_ref,
+             envelope.payload if envelope.retention_class == "forensic" else None, status,
+             envelope.error_code, envelope.error_message or normalization_error, envelope.retention_class,
+             prior[0] if prior else None),
+        )
+        if prior:
+            return 0
+        for event in event_list:
+            connection.execute(
+                """INSERT INTO events (event_id,event_time,event_time_unix_nano,observed_at,source_class,fact_type,stability,
+                source_event,source_instance,source_version,raw_event_sha256,adapter_version,session_id,thread_id,turn_id,
+                item_id,call_id,trace_id,span_id,operation_id,category,name,status,attributes_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (event.event_id, event.event_time, event.event_time_unix_nano, event.observed_at, "native_otel", "native",
+                 "documented" if event.name != "unknown" else "provider_extension", event.source_event, event.source_instance,
+                 event.source_version, event.raw_event_sha256, event.adapter_version, event.session_id, event.thread_id,
+                 event.turn_id, event.item_id, event.call_id, event.trace_id, event.span_id, event.operation_id,
+                 event.category, event.name, event.status, __import__("json").dumps(event.attributes, sort_keys=True, separators=(",", ":"))),
+            )
+    return len(event_list)
+
+
+def update_health(connection: sqlite3.Connection, *, received: int, normalized: int, rejected: int, unknown: int, persistence_error: int, error: str | None) -> None:
+    current = connection.execute("SELECT * FROM collector_health WHERE collector='otlp'").fetchone()
+    values = {
+        "received_total": (current["received_total"] if current else 0) + received,
+        "normalized_total": (current["normalized_total"] if current else 0) + normalized,
+        "rejected_total": (current["rejected_total"] if current else 0) + rejected,
+        "unknown_event_total": (current["unknown_event_total"] if current else 0) + unknown,
+        "persistence_error_total": (current["persistence_error_total"] if current else 0) + persistence_error,
+        "last_success": utc_now() if normalized else (current["last_success"] if current else None),
+        "last_error": error or (current["last_error"] if current else None),
+    }
+    values["status"] = _health_status(cast(int, values["received_total"]), cast(int, values["rejected_total"]), values["last_error"] if isinstance(values["last_error"], str) else None)
+    with connection:
+        connection.execute(
+            """INSERT INTO collector_health(collector,status,received_total,normalized_total,rejected_total,unknown_event_total,
+            persistence_error_total,last_success,last_error,updated_at) VALUES ('otlp',?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(collector) DO UPDATE SET status=excluded.status,received_total=excluded.received_total,
+            normalized_total=excluded.normalized_total,rejected_total=excluded.rejected_total,unknown_event_total=excluded.unknown_event_total,
+            persistence_error_total=excluded.persistence_error_total,last_success=excluded.last_success,last_error=excluded.last_error,
+            updated_at=excluded.updated_at""",
+            (values["status"], values["received_total"], values["normalized_total"], values["rejected_total"], values["unknown_event_total"],
+             values["persistence_error_total"], values["last_success"], values["last_error"], utc_now()),
+        )

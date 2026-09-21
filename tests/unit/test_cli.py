@@ -11,6 +11,6 @@ def test_doctor_is_structured(capsys) -> None:
     assert isinstance(payload["checks"], list)
 
 
-def test_unimplemented_commands_are_explicit(capsys) -> None:
-    assert main(["serve"]) == 1
-    assert json.loads(capsys.readouterr().out)["status"] == "NOT_IMPLEMENTED"
+def test_health_command_is_machine_readable(tmp_path, capsys) -> None:
+    assert main(["health", "--db", str(tmp_path / "observatory.db")]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "healthy"
