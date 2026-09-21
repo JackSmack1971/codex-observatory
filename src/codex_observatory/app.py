@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +30,7 @@ from .api_models import (
     Tool,
     Turn,
 )
+from .live import LiveBroker, serve_live
 from .models import RawEnvelope
 from .normalization import normalize
 from .otlp import OtlpError, decode, error_response, response
@@ -46,6 +47,19 @@ def create_app(db_path: Path | str, *, archive_root: Path | None = None, fronten
         migration_connection.close()
     app = FastAPI(title="Codex Observatory")
     query = QueryService(db, archive_root)
+    broker = LiveBroker(db)
+
+    @app.on_event("startup")
+    async def start_live_broker() -> None:
+        await broker.start()
+
+    @app.on_event("shutdown")
+    async def stop_live_broker() -> None:
+        await broker.stop()
+
+    @app.websocket("/api/v1/live")
+    async def api_live(websocket: WebSocket) -> None:
+        await serve_live(websocket, db, broker)
 
     @app.get("/api/v1/overview", response_model=Overview)
     def api_overview(start: str | None = None, end: str | None = None) -> Overview:
