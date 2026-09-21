@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import asdict
@@ -261,17 +262,21 @@ def main(argv: list[str] | None = None) -> int:
         from .sqlite import connect, migrate
         config = load_config(args.config)
         db = args.db or config.storage.sqlite_path or resolve_paths().sqlite_path
-        connection = connect(db)
         try:
-            migrate(connection)
-            archive_root = getattr(args, "archive_root", None) or config.storage.parquet_root or resolve_paths().parquet_root
-            result = (run_retention(connection, config.retention, archive_root=archive_root)
-                      if args.retention_command == "run"
-                      else plan_retention(connection, config.retention, archive_root=archive_root))
-            print(json.dumps(result.as_dict(), indent=2))
-            return 0 if result.status in {"VERIFIED", "COMPLETED"} else 2
-        finally:
-            connection.close()
+            connection = connect(db)
+            try:
+                migrate(connection)
+                archive_root = getattr(args, "archive_root", None) or config.storage.parquet_root or resolve_paths().parquet_root
+                result = (run_retention(connection, config.retention, archive_root=archive_root)
+                          if args.retention_command == "run"
+                          else plan_retention(connection, config.retention, archive_root=archive_root))
+                print(json.dumps(result.as_dict(), indent=2))
+                return 0 if result.status in {"VERIFIED", "COMPLETED"} else 2
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            print(json.dumps({"status": "FAILED", "error": str(exc)}))
+            return 2
     if args.command in {"health", "query", "git-query"}:
         from .sqlite import connect, migrate
 

@@ -96,6 +96,48 @@ def test_candidate_drift_requires_replanning(tmp_path: Path, monkeypatch: pytest
     }
 
 
+def test_archive_drift_after_planning_blocks_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection, root = _archived_fixture(tmp_path)
+    original = retention_module.plan_retention
+
+    def plan_then_remove_archive(*args, **kwargs):
+        plan = original(*args, **kwargs)
+        next(root.rglob("*.parquet")).unlink()
+        return plan
+
+    monkeypatch.setattr(retention_module, "plan_retention", plan_then_remove_archive)
+    result = run_retention(connection, RetentionConfig(), archive_root=root, evaluation_time=NOW)
+
+    assert result.status == "BLOCKED"
+    assert result.deleted_count == 0
+    assert "archive coverage changed" in (result.failure_reason or "")
+    assert connection.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+
+
+def test_verified_audit_transition_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection, root = _archived_fixture(tmp_path)
+    original = retention_module.plan_retention
+
+    def plan_then_change_status(*args, **kwargs):
+        plan = original(*args, **kwargs)
+        connection.execute(
+            "UPDATE retention_runs SET status='BLOCKED' WHERE run_id=?", (plan.run_id,),
+        )
+        connection.commit()
+        return plan
+
+    monkeypatch.setattr(retention_module, "plan_retention", plan_then_change_status)
+    result = run_retention(connection, RetentionConfig(), archive_root=root, evaluation_time=NOW)
+
+    assert result.status == "BLOCKED"
+    assert "no longer VERIFIED" in (result.failure_reason or "")
+    assert connection.execute("SELECT count(*) FROM events").fetchone()[0] == 1
+
+
 def test_foreign_keys_raw_and_token_projection_are_never_cascaded(tmp_path: Path) -> None:
     connection, root = _archived_fixture(tmp_path)
     connection.execute(
