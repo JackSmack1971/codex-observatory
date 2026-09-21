@@ -54,6 +54,28 @@ The supported analytics surface is fixed backend code: event counts, event
 groupings by source/category/repository, token totals, and tool-event
 success/status counts. There is no browser or user-provided SQL surface.
 
+All historical analytics methods use the canonical hot/cold union. Event
+identity is the deduplication key and the live SQLite row wins while an event
+exists in both stores. This applies to event counts, event groupings, and tool
+status counts as well as the identity query. Token totals similarly merge by
+thread/turn with the current SQLite projection winning, and Git snapshot
+identities merge by snapshot observation identity. Analytics health updates
+are control state rather than historical evidence.
+
+The `AnalyticsService` public method classification is:
+
+| Method | Classification |
+| --- | --- |
+| `event_count` | `HOT_COLD_UNION` |
+| `event_identities` | `HOT_COLD_UNION` |
+| `events_by` | `HOT_COLD_UNION` |
+| `token_total` | `HOT_COLD_UNION` |
+| `git_snapshot_identities` | `HOT_COLD_UNION` |
+| `tool_calls` | `HOT_COLD_UNION` |
+
+Internal analytics-health recording is `CONTROL/HEALTH`; this service has no
+public `HOT_ONLY`, `COLD_ONLY`, or `NOT_HISTORICAL` analytical method.
+
 ## Documentation decisions
 
 The implementation follows the current official [DuckDB Parquet
