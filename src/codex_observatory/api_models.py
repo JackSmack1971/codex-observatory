@@ -167,6 +167,51 @@ class ArchiveHealth(ApiModel):
     duckdb_status: str
 
 
+class AdminUsageHealth(ApiModel):
+    collector: str
+    status: str
+    reason: str | None = None
+    last_success: str | None = None
+    last_error: str | None = None
+
+
+class AdminCompletionUsage(ApiModel):
+    result_identity: str
+    revision: int
+    source: str
+    usage_family: str
+    bucket_start: int
+    bucket_end: int
+    bucket_width: str
+    project_id: str | None
+    user_id: str | None
+    api_key_id: str | None
+    model: str | None
+    batch: bool | None
+    service_tier: str | None
+    input_tokens: int
+    output_tokens: int
+    num_model_requests: int
+    input_audio_tokens: int | None
+    input_cache_write_tokens: int | None
+    input_cached_audio_tokens: int | None
+    input_cached_image_tokens: int | None
+    input_cached_text_tokens: int | None
+    input_cached_tokens: int | None
+    input_image_tokens: int | None
+    input_text_tokens: int | None
+    input_uncached_tokens: int | None
+    output_audio_tokens: int | None
+    output_image_tokens: int | None
+    output_text_tokens: int | None
+    request_start: int
+    request_end: int
+    retrieved_at: str
+    adapter_schema_version: str
+    first_observed_at: str
+    last_observed_at: str
+
+
 class Overview(ApiModel):
     sessions: Metric
     threads: Metric
