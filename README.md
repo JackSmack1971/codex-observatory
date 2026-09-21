@@ -1,10 +1,13 @@
 # Codex Local Telemetry Observatory
 
-Phase 1 adds the local OTLP/HTTP ingestion foundation: protobuf/JSON logs,
+Phase 2 adds a read-only Codex App Server adapter on top of the Phase 1 local
+OTLP/HTTP ingestion foundation: protobuf/JSON logs,
 metrics, and traces are decoded, normalized into event.v1, persisted to SQLite,
-and exposed through read-only health and evidence queries. App Server control,
+and exposed through read-only health and evidence queries. App Server
+initialization, stable thread reconciliation, lifecycle normalization, and
+source health are persisted in migration 2. App Server control,
 hooks, Git enrichment, analytics, and Codex configuration mutation remain out
-of scope.
+of scope. See [docs/phase-2-app-server.md](docs/phase-2-app-server.md).
 
 ## Development
 

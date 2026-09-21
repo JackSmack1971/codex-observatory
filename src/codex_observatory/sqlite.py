@@ -69,6 +69,95 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        2,
+        """
+        CREATE TABLE app_server_state (
+            source_instance TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            server_version TEXT,
+            capabilities_json TEXT NOT NULL DEFAULT '{}',
+            reconnect_total INTEGER NOT NULL DEFAULT 0,
+            messages_received_total INTEGER NOT NULL DEFAULT 0,
+            responses_received_total INTEGER NOT NULL DEFAULT 0,
+            notifications_received_total INTEGER NOT NULL DEFAULT 0,
+            malformed_message_total INTEGER NOT NULL DEFAULT 0,
+            unknown_notification_total INTEGER NOT NULL DEFAULT 0,
+            protocol_error_total INTEGER NOT NULL DEFAULT 0,
+            reconciliation_runs_total INTEGER NOT NULL DEFAULT 0,
+            last_connected TEXT,
+            last_message TEXT,
+            last_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE app_server_messages (
+            message_id TEXT PRIMARY KEY,
+            source_instance TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            method TEXT,
+            request_id TEXT,
+            payload_json TEXT NOT NULL,
+            known INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY(source_instance) REFERENCES app_server_state(source_instance)
+        );
+        CREATE INDEX idx_app_server_messages_method ON app_server_messages(method, received_at);
+        CREATE TABLE threads (
+            thread_id TEXT PRIMARY KEY,
+            name TEXT,
+            cwd TEXT,
+            model_provider TEXT,
+            model TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            archived INTEGER,
+            runtime_status TEXT,
+            loaded INTEGER NOT NULL DEFAULT 0,
+            forked_from_id TEXT,
+            source_instance TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY(source_instance) REFERENCES app_server_state(source_instance)
+        );
+        CREATE TABLE turns (
+            turn_id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            error_json TEXT,
+            duration_ms INTEGER,
+            source_instance TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES threads(thread_id),
+            FOREIGN KEY(source_instance) REFERENCES app_server_state(source_instance)
+        );
+        CREATE INDEX idx_turns_thread ON turns(thread_id);
+        CREATE TABLE thread_items (
+            item_id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            item_type TEXT NOT NULL,
+            lifecycle_status TEXT NOT NULL,
+            final INTEGER NOT NULL DEFAULT 0,
+            content_json TEXT NOT NULL,
+            source_instance TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES threads(thread_id),
+            FOREIGN KEY(turn_id) REFERENCES turns(turn_id),
+            FOREIGN KEY(source_instance) REFERENCES app_server_state(source_instance)
+        );
+        CREATE INDEX idx_thread_items_turn ON thread_items(turn_id);
+        CREATE TABLE app_server_token_usage (
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            usage_json TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            source_instance TEXT NOT NULL,
+            PRIMARY KEY(thread_id, turn_id),
+            FOREIGN KEY(source_instance) REFERENCES app_server_state(source_instance)
+        );
+        """,
+    ),
 )
 
 
@@ -118,6 +207,7 @@ def persist(
     *,
     unknown_count: int = 0,
     normalization_error: str | None = None,
+    source_class: str = "native_otel",
 ) -> int:
     event_list = list(events)
     prior = connection.execute(
@@ -143,7 +233,7 @@ def persist(
                 source_event,source_instance,source_version,raw_event_sha256,adapter_version,session_id,thread_id,turn_id,
                 item_id,call_id,trace_id,span_id,operation_id,category,name,status,attributes_json)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (event.event_id, event.event_time, event.event_time_unix_nano, event.observed_at, "native_otel", "native",
+                (event.event_id, event.event_time, event.event_time_unix_nano, event.observed_at, source_class, "native",
                  "documented" if event.name != "unknown" else "provider_extension", event.source_event, event.source_instance,
                  event.source_version, event.raw_event_sha256, event.adapter_version, event.session_id, event.thread_id,
                  event.turn_id, event.item_id, event.call_id, event.trace_id, event.span_id, event.operation_id,

@@ -69,10 +69,20 @@ def _doctor() -> int:
         {"name": "parquet", "status": "not_implemented", "detail": "archive begins in Phase 8"},
         {"name": "clock", "status": "ok", "detail": "system clock readable"},
     ])
+    from .sqlite import connect, migrate
+    app_db = connect(paths.sqlite_path)
+    try:
+        migrate(app_db)
+        app_row = app_db.execute("SELECT * FROM app_server_state WHERE source_instance='app-server'").fetchone()
+        app_detail = dict(app_row) if app_row else {"status": "disconnected", "reconnect_total": 0}
+        app_status = app_detail.get("status", "disconnected")
+        checks.append({"name": "app_server", "status": app_status, "detail": app_detail})
+    finally:
+        app_db.close()
     checks.append({"name": "config", "status": "ok", "detail": "validated"})
     checks.append({"name": "runtime_paths", "status": "ok", "detail": {key: str(value) for key, value in asdict(paths).items()}})
     checks.append({"name": "admin_key", "status": "ok" if (not config.collectors.openai_admin.enabled or admin_key_present()) else "degraded", "detail": "environment-only credential check"})
-    degraded = any(item["status"] in {"missing", "degraded", "not_configured", "not_implemented", "blocking"} for item in checks)
+    degraded = any(item["status"] in {"missing", "degraded", "disconnected", "connecting", "incompatible", "not_configured", "not_implemented", "blocking"} for item in checks)
     print(json.dumps({"version": __version__, "status": "degraded" if degraded else "healthy", "checks": checks}, indent=2))
     return 2 if any(item["status"] == "blocking" for item in checks) else (1 if degraded else 0)
 

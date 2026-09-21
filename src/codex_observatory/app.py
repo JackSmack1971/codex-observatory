@@ -93,7 +93,10 @@ def create_app(db_path: Path | str) -> FastAPI:
     def health() -> dict[str, object]:
         with request_connection() as connection:
             row = connection.execute("SELECT * FROM collector_health WHERE collector='otlp'").fetchone()
-            return dict(row) if row else {"collector": "otlp", "status": "healthy", "received_total": 0, "normalized_total": 0, "rejected_total": 0, "unknown_event_total": 0, "persistence_error_total": 0, "last_success": None, "last_error": None}
+            result = dict(row) if row else {"collector": "otlp", "status": "healthy", "received_total": 0, "normalized_total": 0, "rejected_total": 0, "unknown_event_total": 0, "persistence_error_total": 0, "last_success": None, "last_error": None}
+            app_server = connection.execute("SELECT * FROM app_server_state WHERE source_instance='app-server'").fetchone()
+            result["app_server"] = dict(app_server) if app_server else {"status": "disconnected", "reconnect_total": 0}
+            return result
 
     @app.get("/events")
     def events(limit: int = 100) -> list[dict[str, object]]:

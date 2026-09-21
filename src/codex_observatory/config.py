@@ -60,7 +60,7 @@ class GitConfig(StrictModel):
 
 class AppServerConfig(StrictModel):
     enabled: bool = True
-    mode: Literal["reconcile", "controlled_live"] = "reconcile"
+    mode: Literal["disabled", "reconcile", "controlled_live"] = "reconcile"
     reconcile_interval_seconds: Annotated[int, Field(gt=0)] = 30
     include_turns: bool = True
 
