@@ -5,3 +5,9 @@
 .live-state.live { color: #72d6a0; }
 .live-state.connecting, .live-state.reconnecting { color: #e8bd67; }
 .live-state.degraded { color: #f07b7b; }
+.scope-notice { border-left:4px solid var(--accent); }
+.scope-notice p { margin:.65rem 0 0; }
+.muted { color:var(--muted); }
+.section-heading { display:flex; justify-content:space-between; align-items:center; margin:28px 0 12px; }
+.range-control { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+select { border:1px solid var(--line); border-radius:4px; padding:8px; background:white; color:var(--ink); font:inherit; }

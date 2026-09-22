@@ -94,6 +94,13 @@ relationship to canonical events: removing raw diagnostics cannot remove
 normalized evidence. Current token-usage projections remain non-prunable under
 this contract. The runner does not schedule itself, vacuum SQLite, delete
 archives, or expose destructive dashboard controls.
+
+OpenAI Admin completions usage is classified as `HISTORICAL_EVIDENCE`, not
+`PRUNABLE_HISTORY`, because this phase has no archive dataset, coverage proof,
+timestamp contract, or deletion ordering for its durable revisions. Usage rows
+are retained indefinitely in this phase. Retention pruning requires a future
+archive/coverage contract; the current retention planner and executor do not
+include this table. `openai_admin_sync_state` remains `CONTROL_STATE`.
 Operational SQLite failures from the CLI are emitted as structured `FAILED`
 JSON with exit status 2.
 
@@ -155,6 +162,12 @@ Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 | `retention_runs` | `AUDIT` |
 | `retention_run_tables` | `AUDIT` |
 | `retention_run_candidates` | `AUDIT` |
+| `openai_usage_completions` | `HISTORICAL_EVIDENCE` |
+| `openai_costs` | `HISTORICAL_EVIDENCE` |
+| `openai_cost_sync_state` | `CONTROL_STATE` |
+| `openai_cost_sync_lock` | `CONTROL_STATE` |
+| `openai_admin_sync_state` | `CONTROL_STATE` |
+| `openai_admin_sync_lock` | `CONTROL_STATE` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 
 `app_server_token_usage` is updated in place for a `(thread_id, turn_id)` and

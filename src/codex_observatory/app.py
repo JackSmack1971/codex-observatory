@@ -14,7 +14,14 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, We
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .admin_queries import completions_summary, costs_summary, summary
 from .api_models import (
+    AdminCompletionsSummary,
+    AdminCompletionUsage,
+    AdminCost,
+    AdminCostsSummary,
+    AdminSummary,
+    AdminUsageHealth,
     Agent,
     Approval,
     ArchiveHealth,
@@ -30,9 +37,14 @@ from .api_models import (
     Tool,
     Turn,
 )
+from .config import admin_key_present, load_config
 from .live import LiveBroker, serve_live
 from .models import RawEnvelope
 from .normalization import normalize
+from .openai_admin import health as admin_health
+from .openai_admin import read_usage
+from .openai_costs import health as admin_cost_health
+from .openai_costs import read_costs
 from .otlp import OtlpError, decode, error_response, response
 from .query import QueryService
 from .sqlite import connect, migrate, persist, update_health
@@ -114,6 +126,56 @@ def create_app(db_path: Path | str, *, archive_root: Path | None = None, fronten
 
     @app.get("/api/v1/archive/health", response_model=ArchiveHealth)
     def api_archive_health() -> ArchiveHealth: return query.archive_health()
+
+    @app.get("/api/v1/admin/usage/completions", response_model=Page[AdminCompletionUsage])
+    def api_admin_usage(limit: int = Query(50, ge=1, le=100), cursor: str | None = None,
+                        start_time: int | None = Query(None, ge=0), end_time: int | None = Query(None, ge=0)) -> Page[AdminCompletionUsage]:
+        if cursor is not None and (not cursor.isdigit() or int(cursor) < 0):
+            raise HTTPException(400, "invalid cursor")
+        if start_time is not None and end_time is not None and start_time >= end_time:
+            raise HTTPException(422, "start_time must be before end_time")
+        with request_connection() as connection:
+            page = read_usage(connection, limit=limit, offset=int(cursor or 0), start=start_time, end=end_time)
+        return Page[AdminCompletionUsage](items=[AdminCompletionUsage.model_validate(item) for item in page["items"]], next_cursor=page["next_cursor"], has_more=page["has_more"])
+
+    @app.get("/api/v1/admin/usage/health", response_model=AdminUsageHealth)
+    def api_admin_health() -> AdminUsageHealth:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminUsageHealth.model_validate(admin_health(connection, enabled=config.collectors.openai_admin.enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/costs", response_model=Page[AdminCost])
+    def api_admin_costs(limit: int = Query(50, ge=1, le=100), cursor: str | None = None,
+                        start_time: int | None = Query(None, ge=0), end_time: int | None = Query(None, ge=0)) -> Page[AdminCost]:
+        if cursor is not None and (not cursor.isdigit() or int(cursor) < 0): raise HTTPException(400, "invalid cursor")
+        if start_time is not None and end_time is not None and start_time >= end_time: raise HTTPException(422, "start_time must be before end_time")
+        with request_connection() as connection:
+            page = read_costs(connection, limit=limit, offset=int(cursor or 0), start=start_time, end=end_time)
+        return Page[AdminCost](items=[AdminCost.model_validate(item) for item in page["items"]], next_cursor=page["next_cursor"], has_more=page["has_more"])
+
+    @app.get("/api/v1/admin/costs/health", response_model=AdminUsageHealth)
+    def api_admin_cost_health() -> AdminUsageHealth:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminUsageHealth.model_validate(admin_cost_health(connection, enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/usage/completions/summary", response_model=AdminCompletionsSummary)
+    def api_admin_usage_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminCompletionsSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminCompletionsSummary.model_validate(completions_summary(connection, range_key=range, enabled=config.collectors.openai_admin.enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/costs/summary", response_model=AdminCostsSummary)
+    def api_admin_costs_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminCostsSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminCostsSummary.model_validate(costs_summary(connection, range_key=range, enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/summary", response_model=AdminSummary)
+    def api_admin_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminSummary.model_validate(summary(connection, range_key=range, enabled=config.collectors.openai_admin.enabled, costs_enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
 
     @app.get("/api/v1/health", response_model=Health)
     def api_health() -> Health: return query.health()

@@ -7,6 +7,7 @@ The default mode is `minimal`.
 - Raw wire payloads are not persisted.
 - A wire payload may exist transiently in a processing spool while normalization completes, then is deleted after a successful commit.
 - `forensic` is explicit opt-in and is required for prompt storage, full arguments/output, or durable raw wire bodies.
-- No API/admin credential is part of the TOML schema. The optional Admin adapter may detect `OPENAI_ADMIN_API_KEY` from the environment only.
+- No API/admin credential is part of the TOML schema. The optional Admin adapter may detect `OPENAI_ADMIN_KEY` from the environment only; it is never persisted, logged, or returned by the API.
+- Admin transport errors use one sanitization boundary before they are persisted, returned by health, printed by the CLI, or re-raised; credential values and authorization-header values are not externally rendered.
 
 SHA-256 digests cover canonical UTF-8 text or canonical JSON encoding. Redaction precedes canonicalization and hashing. Privacy failures are treated as correctness failures.

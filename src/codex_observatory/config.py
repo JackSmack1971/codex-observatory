@@ -68,7 +68,12 @@ class AppServerConfig(StrictModel):
 class OpenAIAdminConfig(StrictModel):
     enabled: bool = False
     sync_interval_minutes: Annotated[int, Field(gt=0)] = 60
-    bucket_width: str = "1h"
+    initial_lookback_hours: Annotated[int, Field(gt=0)] = 24
+    overlap_hours: Annotated[int, Field(ge=0)] = 1
+    bucket_width: Literal["1m", "1h", "1d"] = "1h"
+    group_by: list[Literal["project_id", "user_id", "api_key_id", "model", "batch", "service_tier"]] = ["project_id", "model"]
+    costs_enabled: bool = False
+    costs_group_by: list[Literal["project_id", "line_item", "api_key_id"]] = ["project_id", "line_item"]
 
 
 class CollectorsConfig(StrictModel):
@@ -138,4 +143,4 @@ def load_config(path: Path | None = None) -> ObservatoryConfig:
 
 
 def admin_key_present() -> bool:
-    return bool(os.environ.get("OPENAI_ADMIN_API_KEY"))
+    return bool(os.environ.get("OPENAI_ADMIN_KEY"))

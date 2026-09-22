@@ -167,6 +167,144 @@ class ArchiveHealth(ApiModel):
     duckdb_status: str
 
 
+class AdminUsageHealth(ApiModel):
+    collector: str
+    status: str
+    reason: str | None = None
+    last_success: str | None = None
+    last_error: str | None = None
+
+
+class AdminProvenance(ApiModel):
+    source: Literal["openai_admin_api"] = "openai_admin_api"
+    scope: Literal["organization"] = "organization"
+    attribution: Literal["unavailable"] = "unavailable"
+
+
+class AdminInterval(ApiModel):
+    key: Literal["24h", "7d", "30d"]
+    start_time: int
+    end_time: int
+    timezone: Literal["UTC"] = "UTC"
+
+
+class AdminBucket(ApiModel):
+    start_time: int | None = None
+    end_time: int | None = None
+
+
+class AdminUsageGroup(ApiModel):
+    dimension: Literal["model", "project", "service_tier", "batch"]
+    value: str | bool | None
+    input_tokens: int
+    output_tokens: int
+    model_requests: int
+    result_count: int
+
+
+class AdminCompletionsSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    health: AdminUsageHealth
+    input_tokens: int | None
+    output_tokens: int | None
+    model_requests: int | None
+    result_count: int
+    latest_bucket: AdminBucket
+    groups: list[AdminUsageGroup]
+
+
+class AdminCostTotal(ApiModel):
+    currency: str | None
+    amount: str
+
+
+class AdminCostGroup(ApiModel):
+    dimension: Literal["project", "line_item"]
+    value: str | None
+    amount: str
+    currency: str | None
+    result_count: int
+
+
+class AdminCostsSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    health: AdminUsageHealth
+    totals: list[AdminCostTotal]
+    result_count: int
+    latest_bucket: AdminBucket
+    groups: list[AdminCostGroup]
+    groups_omitted: int = 0
+
+
+class AdminSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    usage: AdminCompletionsSummary
+    costs: AdminCostsSummary
+
+
+class AdminCost(ApiModel):
+    result_identity: str
+    revision: int
+    source: str
+    evidence_scope: str
+    bucket_start: int
+    bucket_end: int
+    bucket_width: str
+    project_id: str | None
+    line_item: str | None
+    api_key_id: str | None
+    amount_value: str | None
+    currency: str | None
+    quantity_value: str | None
+    quantity_unit: str | None
+    request_start: int
+    request_end: int
+    retrieved_at: str
+    adapter_schema_version: str
+    first_observed_at: str
+    last_observed_at: str
+
+
+class AdminCompletionUsage(ApiModel):
+    result_identity: str
+    revision: int
+    source: str
+    usage_family: str
+    bucket_start: int
+    bucket_end: int
+    bucket_width: str
+    project_id: str | None
+    user_id: str | None
+    api_key_id: str | None
+    model: str | None
+    batch: bool | None
+    service_tier: str | None
+    input_tokens: int
+    output_tokens: int
+    num_model_requests: int
+    input_audio_tokens: int | None
+    input_cache_write_tokens: int | None
+    input_cached_audio_tokens: int | None
+    input_cached_image_tokens: int | None
+    input_cached_text_tokens: int | None
+    input_cached_tokens: int | None
+    input_image_tokens: int | None
+    input_text_tokens: int | None
+    input_uncached_tokens: int | None
+    output_audio_tokens: int | None
+    output_image_tokens: int | None
+    output_text_tokens: int | None
+    request_start: int
+    request_end: int
+    retrieved_at: str
+    adapter_schema_version: str
+    first_observed_at: str
+    last_observed_at: str
+
+
 class Overview(ApiModel):
     sessions: Metric
     threads: Metric

@@ -162,7 +162,7 @@ def test_sqlite_policies_and_restart(tmp_path: Path) -> None:
     first.close()
     second = connect(path)
     migrate(second)
-    assert [row[0] for row in second.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert [row[0] for row in second.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 14))
     assert second.execute("SELECT count(*) FROM events").fetchone()[0] == 1
 
 
