@@ -27,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-observatory", description="Local Codex telemetry observatory")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command")
-    for name in ("init", "migrate", "admin-sync", "verify-install"):
+    for name in ("init", "migrate", "admin-sync", "admin-cost-sync", "verify-install"):
         commands.add_parser(name)
     serve = commands.add_parser("serve")
     serve.add_argument("--db", type=Path, default=None)
@@ -207,6 +207,25 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - adapter errors are reported without credential material.
             print(json.dumps({"status": "ADMIN_FAILED", "error": sanitize_admin_error(exc)}))
             return 1
+        finally:
+            connection.close()
+    if args.command == "admin-cost-sync":
+        from .openai_admin import sanitize_admin_error
+        from .openai_costs import create_client
+        from .openai_costs import sync as costs_sync
+        from .sqlite import connect, migrate
+        config = load_config()
+        if not config.collectors.openai_admin.costs_enabled:
+            print(json.dumps({"status": "ADMIN_COSTS_DISABLED"})); return 0
+        client = create_client(enabled=config.collectors.openai_admin.costs_enabled)
+        if client is None:
+            print(json.dumps({"status": "ADMIN_COSTS_CREDENTIAL_MISSING"})); return 0
+        db = config.storage.sqlite_path or resolve_paths().sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection); print(json.dumps(costs_sync(connection, config.collectors.openai_admin, client), indent=2)); return 0
+        except Exception as exc:  # noqa: BLE001 - CLI reports sanitized adapter failures.
+            print(json.dumps({"status": "ADMIN_COSTS_FAILED", "error": sanitize_admin_error(exc)})); return 1
         finally:
             connection.close()
     if args.command == "hook":

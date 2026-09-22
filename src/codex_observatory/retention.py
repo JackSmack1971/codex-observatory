@@ -60,6 +60,9 @@ _TABLE_CLASSIFICATIONS = {
     "retention_run_tables": RetentionTableClass.AUDIT,
     "retention_run_candidates": RetentionTableClass.AUDIT,
     "openai_usage_completions": RetentionTableClass.HISTORICAL_EVIDENCE,
+    "openai_costs": RetentionTableClass.HISTORICAL_EVIDENCE,
+    "openai_cost_sync_state": RetentionTableClass.CONTROL_STATE,
+    "openai_cost_sync_lock": RetentionTableClass.CONTROL_STATE,
     "openai_admin_sync_state": RetentionTableClass.CONTROL_STATE,
 }
 

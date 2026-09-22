@@ -163,6 +163,9 @@ Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 | `retention_run_tables` | `AUDIT` |
 | `retention_run_candidates` | `AUDIT` |
 | `openai_usage_completions` | `HISTORICAL_EVIDENCE` |
+| `openai_costs` | `HISTORICAL_EVIDENCE` |
+| `openai_cost_sync_state` | `CONTROL_STATE` |
+| `openai_cost_sync_lock` | `CONTROL_STATE` |
 | `openai_admin_sync_state` | `CONTROL_STATE` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 

@@ -33,4 +33,19 @@ The public usage read maps an explicit allow-list of contract fields. Internal
 revision fields such as `is_current` and `result_sha256` are persistence-only.
 
 Read-only inspection is available at `/api/v1/admin/usage/completions` and
-`/api/v1/admin/usage/health`. Costs and other usage families are out of scope.
+`/api/v1/admin/usage/health`.
+
+The optional costs adapter reads `GET /organization/costs` through
+`client.admin.organization.usage.costs` in the locked `openai==3.16.2` SDK.
+It uses Unix-second inclusive/exclusive bounds, fixed `bucket_width="1d"`,
+`group_by` values `project_id`, `line_item`, or `api_key_id`, optional project,
+line-item, and API-key filters, `limit` 1–180, and page cursors from
+`next_page`. Results are `bucket` objects containing nullable
+`organization.costs.result` dimensions and optional `amount {currency, value}`,
+`quantity`, and `quantity_unit`. Durable numeric values are canonical decimal
+strings. This is organization/API billing evidence, never local Codex session,
+thread, turn, or agent cost. Costs own separate sync state and health, and are
+classified as `HISTORICAL_EVIDENCE` until archive coverage exists. Costs use a
+SQLite lease in addition to the in-process lock, so separate CLI processes
+share the `ADMIN_COSTS_BUSY` guard; an expired lease can be reclaimed after a
+crashed process.
