@@ -24,8 +24,9 @@ Sync state is independent of facts and records the requested/completed window,
 in-progress cursor, page/bucket counts, last success, and last error. Health
 states are `ADMIN_DISABLED`, `ADMIN_CREDENTIAL_MISSING`, `ADMIN_READY`,
 `ADMIN_SYNCING`, `ADMIN_HEALTHY`, `ADMIN_DEGRADED`, and `ADMIN_FAILED`.
-Only one local Admin sync may run at a time; a concurrent invocation fails fast
-with `ADMIN_BUSY` and cannot change the active sync's cursor or window. Admin
+Only one Admin sync process may run at a time; a concurrent invocation fails
+fast with `ADMIN_BUSY` and cannot change the active sync's cursor or window.
+Admin
 transport errors pass through one sanitization boundary before persistence,
 health, CLI output, or re-raising.
 
@@ -34,6 +35,34 @@ revision fields such as `is_current` and `result_sha256` are persistence-only.
 
 Read-only inspection is available at `/api/v1/admin/usage/completions` and
 `/api/v1/admin/usage/health`.
+
+## Admin Usage & Costs dashboard
+
+The read-only dashboard destination `/admin` presents fixed, UTC-bounded
+aggregates from the persisted Admin evidence. Its source is the OpenAI Admin
+API and its scope is organization/API usage and billing evidence. It does not
+establish attribution to a local Codex session, thread, turn, or agent; that
+attribution is unavailable in this slice.
+
+The page exposes independent completions and costs health, including disabled,
+credential-missing, ready, syncing, healthy, degraded, failed, and busy states
+when supplied by the adapters. A missing `OPENAI_ADMIN_KEY` is rendered as
+credential missing and no credential material is returned by the API.
+
+Supported presentation intervals are `24h`, `7d`, and `30d`, using UTC
+inclusive/exclusive bucket overlap semantics. Usage groups are limited to
+persisted dimensions. Cost totals are exact decimal strings and remain
+separate when more than one currency is present; currencies are never
+converted. Empty intervals and absent successful syncs are shown as unavailable
+or no data rather than as zero. The dashboard uses the existing live
+invalidation path to refetch authoritative HTTP data; Admin bodies are not
+streamed as a second frontend state source.
+
+Typed summary surfaces are `/api/v1/admin/summary`,
+`/api/v1/admin/usage/completions/summary`, and
+`/api/v1/admin/costs/summary`. Each response carries explicit
+`source=openai_admin_api`, `scope=organization`, and
+`attribution=unavailable` provenance.
 
 The optional costs adapter reads `GET /organization/costs` through
 `client.admin.organization.usage.costs` in the locked `openai==3.16.2` SDK.

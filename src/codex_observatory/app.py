@@ -14,9 +14,13 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, We
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .admin_queries import completions_summary, costs_summary, summary
 from .api_models import (
+    AdminCompletionsSummary,
     AdminCompletionUsage,
     AdminCost,
+    AdminCostsSummary,
+    AdminSummary,
     AdminUsageHealth,
     Agent,
     Approval,
@@ -154,6 +158,24 @@ def create_app(db_path: Path | str, *, archive_root: Path | None = None, fronten
         config = load_config()
         with request_connection() as connection:
             return AdminUsageHealth.model_validate(admin_cost_health(connection, enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/usage/completions/summary", response_model=AdminCompletionsSummary)
+    def api_admin_usage_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminCompletionsSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminCompletionsSummary.model_validate(completions_summary(connection, range_key=range, enabled=config.collectors.openai_admin.enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/costs/summary", response_model=AdminCostsSummary)
+    def api_admin_costs_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminCostsSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminCostsSummary.model_validate(costs_summary(connection, range_key=range, enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
+
+    @app.get("/api/v1/admin/summary", response_model=AdminSummary)
+    def api_admin_summary(range: str = Query("24h", pattern="^(24h|7d|30d)$")) -> AdminSummary:
+        config = load_config()
+        with request_connection() as connection:
+            return AdminSummary.model_validate(summary(connection, range_key=range, enabled=config.collectors.openai_admin.enabled, costs_enabled=config.collectors.openai_admin.costs_enabled, credential_present=admin_key_present()))
 
     @app.get("/api/v1/health", response_model=Health)
     def api_health() -> Health: return query.health()

@@ -175,6 +175,76 @@ class AdminUsageHealth(ApiModel):
     last_error: str | None = None
 
 
+class AdminProvenance(ApiModel):
+    source: Literal["openai_admin_api"] = "openai_admin_api"
+    scope: Literal["organization"] = "organization"
+    attribution: Literal["unavailable"] = "unavailable"
+
+
+class AdminInterval(ApiModel):
+    key: Literal["24h", "7d", "30d"]
+    start_time: int
+    end_time: int
+    timezone: Literal["UTC"] = "UTC"
+
+
+class AdminBucket(ApiModel):
+    start_time: int | None = None
+    end_time: int | None = None
+
+
+class AdminUsageGroup(ApiModel):
+    dimension: Literal["model", "project", "service_tier", "batch"]
+    value: str | bool | None
+    input_tokens: int
+    output_tokens: int
+    model_requests: int
+    result_count: int
+
+
+class AdminCompletionsSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    health: AdminUsageHealth
+    input_tokens: int | None
+    output_tokens: int | None
+    model_requests: int | None
+    result_count: int
+    latest_bucket: AdminBucket
+    groups: list[AdminUsageGroup]
+
+
+class AdminCostTotal(ApiModel):
+    currency: str | None
+    amount: str
+
+
+class AdminCostGroup(ApiModel):
+    dimension: Literal["project", "line_item"]
+    value: str | None
+    amount: str
+    currency: str | None
+    result_count: int
+
+
+class AdminCostsSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    health: AdminUsageHealth
+    totals: list[AdminCostTotal]
+    result_count: int
+    latest_bucket: AdminBucket
+    groups: list[AdminCostGroup]
+    groups_omitted: int = 0
+
+
+class AdminSummary(ApiModel):
+    provenance: AdminProvenance
+    interval: AdminInterval
+    usage: AdminCompletionsSummary
+    costs: AdminCostsSummary
+
+
 class AdminCost(ApiModel):
     result_identity: str
     revision: int

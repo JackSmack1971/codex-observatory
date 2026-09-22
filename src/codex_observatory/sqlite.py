@@ -470,6 +470,12 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             owner_id TEXT NOT NULL,
             lease_expires_at INTEGER NOT NULL
         );"""),
+    (13, """
+        CREATE TABLE openai_admin_sync_lock (
+            lock_id INTEGER PRIMARY KEY CHECK(lock_id = 1),
+            owner_id TEXT NOT NULL,
+            lease_expires_at INTEGER NOT NULL
+        );"""),
 )
 
 

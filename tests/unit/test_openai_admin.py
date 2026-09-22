@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -290,3 +293,31 @@ def test_concurrent_sync_fails_fast_without_changing_active_window(tmp_path: Pat
     assert result_holder[0]["status"] == "ADMIN_HEALTHY"
     first_db.close()
     second_db.close()
+
+
+def test_concurrent_sync_is_busy_across_processes(tmp_path: Path) -> None:
+    from codex_observatory.admin_sync_lock import acquire, release
+
+    path = tmp_path / "cross-process.db"
+    connection = connect(path)
+    migrate(connection)
+    owner = "parent-test-owner"
+    assert acquire(connection, "openai_admin_sync_lock", owner)
+    code = """
+import json, sys
+from pathlib import Path
+from codex_observatory.config import OpenAIAdminConfig
+from codex_observatory.openai_admin import sync
+from codex_observatory.sqlite import connect, migrate
+class Empty:
+    def completions(self, **kwargs):
+        return {"data": [], "has_more": False, "next_page": None}
+db = connect(Path(sys.argv[1])); migrate(db)
+print(json.dumps(sync(db, OpenAIAdminConfig(enabled=True), Empty())))
+db.close()
+"""
+    result = subprocess.run([sys.executable, "-c", code, str(path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "ADMIN_BUSY"
+    release(connection, "openai_admin_sync_lock", owner)
+    connection.close()
