@@ -187,6 +187,28 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - doctor must report failures as data.
             print(json.dumps({"status": "degraded", "checks": [{"name": "doctor", "status": "error", "detail": str(exc)}]}))
             return 1
+    if args.command == "admin-sync":
+        from .openai_admin import create_client, sync
+        from .sqlite import connect, migrate
+        config = load_config()
+        if not config.collectors.openai_admin.enabled:
+            print(json.dumps({"status": "ADMIN_DISABLED"}))
+            return 0
+        client = create_client(enabled=config.collectors.openai_admin.enabled)
+        if client is None:
+            print(json.dumps({"status": "ADMIN_CREDENTIAL_MISSING"}))
+            return 0
+        db = config.storage.sqlite_path or resolve_paths().sqlite_path
+        connection = connect(db)
+        try:
+            migrate(connection)
+            print(json.dumps(sync(connection, config.collectors.openai_admin, client), indent=2))
+            return 0
+        except Exception as exc:  # noqa: BLE001 - adapter errors are reported without credential material.
+            print(json.dumps({"status": "ADMIN_FAILED", "error": str(exc)}))
+            return 1
+        finally:
+            connection.close()
     if args.command == "hook":
         from .hook import run_hook
         return run_hook(sys.stdin.read(), args.spool)

@@ -422,6 +422,31 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             CHECK(planned_delete IN (0,1));
         """,
     ),
+    (
+        10,
+        """
+        CREATE TABLE openai_usage_completions (
+            result_identity TEXT NOT NULL, revision INTEGER NOT NULL, source TEXT NOT NULL,
+            usage_family TEXT NOT NULL, bucket_start INTEGER NOT NULL, bucket_end INTEGER NOT NULL,
+            bucket_width TEXT NOT NULL, project_id TEXT, user_id TEXT, api_key_id TEXT, model TEXT,
+            batch INTEGER, service_tier TEXT, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+            num_model_requests INTEGER NOT NULL, input_audio_tokens INTEGER, input_cache_write_tokens INTEGER,
+            input_cached_audio_tokens INTEGER, input_cached_image_tokens INTEGER, input_cached_text_tokens INTEGER,
+            input_cached_tokens INTEGER, input_image_tokens INTEGER, input_text_tokens INTEGER,
+            input_uncached_tokens INTEGER, output_audio_tokens INTEGER, output_image_tokens INTEGER,
+            output_text_tokens INTEGER, request_start INTEGER NOT NULL, request_end INTEGER NOT NULL,
+            retrieved_at TEXT NOT NULL, adapter_schema_version TEXT NOT NULL, result_sha256 TEXT NOT NULL,
+            first_observed_at TEXT NOT NULL, last_observed_at TEXT NOT NULL,
+            is_current INTEGER NOT NULL CHECK(is_current IN (0,1)), PRIMARY KEY(result_identity, revision)
+        );
+        CREATE INDEX idx_openai_usage_current ON openai_usage_completions(bucket_start, result_identity) WHERE is_current=1;
+        CREATE TABLE openai_admin_sync_state (
+            collector TEXT PRIMARY KEY, status TEXT NOT NULL, requested_start INTEGER, requested_end INTEGER,
+            completed_start INTEGER, completed_end INTEGER, page_cursor TEXT, last_success TEXT, last_error TEXT,
+            pages_total INTEGER NOT NULL DEFAULT 0, buckets_total INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 )
 
 

@@ -34,7 +34,10 @@ include_turns = true
 [collectors.openai_admin]
 enabled = false
 sync_interval_minutes = 60
+initial_lookback_hours = 24
+overlap_hours = 1
 bucket_width = "1h"
+group_by = ["project_id", "model"]
 
 [privacy]
 mode = "minimal"

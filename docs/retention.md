@@ -155,6 +155,8 @@ Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 | `retention_runs` | `AUDIT` |
 | `retention_run_tables` | `AUDIT` |
 | `retention_run_candidates` | `AUDIT` |
+| `openai_usage_completions` | `PRUNABLE_HISTORY` |
+| `openai_admin_sync_state` | `CONTROL_STATE` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 
 `app_server_token_usage` is updated in place for a `(thread_id, turn_id)` and
