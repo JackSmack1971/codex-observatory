@@ -138,6 +138,7 @@ Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 | `schema_migrations` | `AUDIT` |
 | `raw_events` | `PRUNABLE_HISTORY` |
 | `events` | `PRUNABLE_HISTORY` |
+| `event_memberships` | `CURRENT_PROJECTION` |
 | `collector_health` | `CONTROL_STATE` |
 | `app_server_state` | `CONTROL_STATE` |
 | `app_server_messages` | `PRUNABLE_HISTORY` |

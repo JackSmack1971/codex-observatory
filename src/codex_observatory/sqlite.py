@@ -476,6 +476,15 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             owner_id TEXT NOT NULL,
             lease_expires_at INTEGER NOT NULL
         );"""),
+    (14, """
+        CREATE TABLE event_memberships (
+            event_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('tool', 'approval', 'skill', 'agent')),
+            PRIMARY KEY(event_id, kind),
+            FOREIGN KEY(event_id) REFERENCES events(event_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_event_memberships_kind ON event_memberships(kind);
+        """),
 )
 
 
@@ -509,6 +518,17 @@ def migrate(connection: sqlite3.Connection) -> None:
                 if statement:
                     connection.execute(statement)
             connection.execute("INSERT INTO schema_migrations(version, applied_at, checksum) VALUES (?, ?, ?)", (version, utc_now(), checksum))
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'").fetchone():
+            connection.execute(
+                """INSERT OR IGNORE INTO event_memberships(event_id, kind)
+                SELECT event_id, 'tool' FROM events WHERE category LIKE '%tool%' OR name LIKE '%tool%'
+                UNION ALL
+                SELECT event_id, 'approval' FROM events WHERE category LIKE '%approval%' OR name LIKE '%approval%'
+                UNION ALL
+                SELECT event_id, 'skill' FROM events WHERE category LIKE '%skill%' OR name LIKE '%skill%'
+                UNION ALL
+                SELECT event_id, 'agent' FROM events WHERE category='agent_lifecycle'"""
+            )
         connection.commit()
     except Exception:
         connection.rollback()
@@ -561,6 +581,21 @@ def persist(
                  event.source_version, event.raw_event_sha256, event.adapter_version, event.session_id, event.thread_id,
                  event.turn_id, event.item_id, event.call_id, event.trace_id, event.span_id, event.operation_id,
                  event.category, event.name, event.status, __import__("json").dumps(event.attributes, sort_keys=True, separators=(",", ":"))),
+            )
+            connection.execute(
+                """INSERT INTO event_memberships(event_id, kind)
+                SELECT event_id, 'tool' FROM events
+                WHERE event_id=? AND (category LIKE '%tool%' OR name LIKE '%tool%')
+                UNION ALL
+                SELECT event_id, 'approval' FROM events
+                WHERE event_id=? AND (category LIKE '%approval%' OR name LIKE '%approval%')
+                UNION ALL
+                SELECT event_id, 'skill' FROM events
+                WHERE event_id=? AND (category LIKE '%skill%' OR name LIKE '%skill%')
+                UNION ALL
+                SELECT event_id, 'agent' FROM events
+                WHERE event_id=? AND category='agent_lifecycle'""",
+                (event.event_id, event.event_id, event.event_id, event.event_id),
             )
     return len(event_list)
 

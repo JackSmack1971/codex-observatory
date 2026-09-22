@@ -35,6 +35,7 @@ _TABLE_CLASSIFICATIONS = {
     "schema_migrations": RetentionTableClass.AUDIT,
     "raw_events": RetentionTableClass.PRUNABLE_HISTORY,
     "events": RetentionTableClass.PRUNABLE_HISTORY,
+    "event_memberships": RetentionTableClass.CURRENT_PROJECTION,
     "collector_health": RetentionTableClass.CONTROL_STATE,
     "app_server_state": RetentionTableClass.CONTROL_STATE,
     "app_server_messages": RetentionTableClass.PRUNABLE_HISTORY,
