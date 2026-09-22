@@ -13,6 +13,10 @@ The observatory is read-only with respect to Codex execution. No collector or da
 | Git | repository snapshots | command output at a repository cwd | Phase 4 implemented; read-only |
 | OpenAI Admin API | optional aggregate completions usage | `GET /organization/usage/completions`, SDK `openai==3.16.2` | implemented; costs remain out of scope |
 
+OpenAI Admin completions rows are durable historical evidence and are retained
+indefinitely in this phase. They are not part of v1 retention pruning; a future
+archive/coverage contract is required before pruning can be added.
+
 Each source must preserve its observed version and provenance. A live contract that differs from a fixture/schema for the detected Codex version fails compatibility visibly; it is not silently adapted.
 
 ## Failure behavior

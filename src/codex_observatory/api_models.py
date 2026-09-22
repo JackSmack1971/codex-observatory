@@ -175,6 +175,29 @@ class AdminUsageHealth(ApiModel):
     last_error: str | None = None
 
 
+class AdminCost(ApiModel):
+    result_identity: str
+    revision: int
+    source: str
+    evidence_scope: str
+    bucket_start: int
+    bucket_end: int
+    bucket_width: str
+    project_id: str | None
+    line_item: str | None
+    api_key_id: str | None
+    amount_value: str | None
+    currency: str | None
+    quantity_value: str | None
+    quantity_unit: str | None
+    request_start: int
+    request_end: int
+    retrieved_at: str
+    adapter_schema_version: str
+    first_observed_at: str
+    last_observed_at: str
+
+
 class AdminCompletionUsage(ApiModel):
     result_identity: str
     revision: int

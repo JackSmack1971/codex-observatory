@@ -72,6 +72,8 @@ class OpenAIAdminConfig(StrictModel):
     overlap_hours: Annotated[int, Field(ge=0)] = 1
     bucket_width: Literal["1m", "1h", "1d"] = "1h"
     group_by: list[Literal["project_id", "user_id", "api_key_id", "model", "batch", "service_tier"]] = ["project_id", "model"]
+    costs_enabled: bool = False
+    costs_group_by: list[Literal["project_id", "line_item", "api_key_id"]] = ["project_id", "line_item"]
 
 
 class CollectorsConfig(StrictModel):

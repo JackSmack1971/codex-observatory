@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from codex_observatory.cli import DEGRADED_DOCTOR_STATUSES, main
+from codex_observatory.config import ObservatoryConfig
 
 
 def test_doctor_is_structured(capsys) -> None:
@@ -73,3 +74,26 @@ def test_retention_run_operational_failure_is_machine_readable(monkeypatch, caps
     assert json.loads(capsys.readouterr().out) == {
         "status": "FAILED", "error": "database is locked",
     }
+
+
+def test_admin_cli_secret_canary_has_no_stdout_or_stderr_leak(tmp_path, monkeypatch, capsys) -> None:
+    import codex_observatory.openai_admin as admin
+
+    secret = "cli-admin-secret"
+    config = ObservatoryConfig()
+    config.storage.sqlite_path = tmp_path / "admin.db"
+    config.collectors.openai_admin.enabled = True
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", secret)
+    monkeypatch.setattr("codex_observatory.cli.load_config", lambda: config)
+
+    class Unauthorized:
+        def completions(self, **kwargs: object):
+            error = RuntimeError(f"Authorization: Bearer {secret}")
+            error.status_code = 401  # type: ignore[attr-defined]
+            raise error
+
+    monkeypatch.setattr(admin, "create_client", lambda *, enabled: Unauthorized())
+    assert main(["admin-sync"]) == 1
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err

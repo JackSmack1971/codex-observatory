@@ -38,6 +38,8 @@ initial_lookback_hours = 24
 overlap_hours = 1
 bucket_width = "1h"
 group_by = ["project_id", "model"]
+costs_enabled = false
+costs_group_by = ["project_id", "line_item"]
 
 [privacy]
 mode = "minimal"

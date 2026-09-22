@@ -24,6 +24,7 @@ class RetentionTableClass(StrEnum):
     """The single retention classification assigned to an application table."""
 
     PRUNABLE_HISTORY = "PRUNABLE_HISTORY"
+    HISTORICAL_EVIDENCE = "HISTORICAL_EVIDENCE"
     CURRENT_PROJECTION = "CURRENT_PROJECTION"
     CONTROL_STATE = "CONTROL_STATE"
     ARCHIVE_CONTROL = "ARCHIVE_CONTROL"
@@ -58,7 +59,10 @@ _TABLE_CLASSIFICATIONS = {
     "retention_runs": RetentionTableClass.AUDIT,
     "retention_run_tables": RetentionTableClass.AUDIT,
     "retention_run_candidates": RetentionTableClass.AUDIT,
-    "openai_usage_completions": RetentionTableClass.PRUNABLE_HISTORY,
+    "openai_usage_completions": RetentionTableClass.HISTORICAL_EVIDENCE,
+    "openai_costs": RetentionTableClass.HISTORICAL_EVIDENCE,
+    "openai_cost_sync_state": RetentionTableClass.CONTROL_STATE,
+    "openai_cost_sync_lock": RetentionTableClass.CONTROL_STATE,
     "openai_admin_sync_state": RetentionTableClass.CONTROL_STATE,
 }
 

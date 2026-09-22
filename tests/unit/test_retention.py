@@ -75,7 +75,7 @@ def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
         for row in phase6.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )
-    ] == list(range(1, 11))
+    ] == list(range(1, 13))
 
 
 def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:
@@ -161,6 +161,18 @@ def test_token_usage_is_a_current_projection_only() -> None:
     assert "app_server_token_usage" not in PRUNABLE_HISTORY_TABLES
     assert "app_server_token_usage" not in PRUNABLE_HISTORY_ORDER
     assert "app_server_token_usage" not in PRUNABLE_TIMESTAMP_COLUMNS
+
+
+def test_admin_usage_is_retained_historical_evidence() -> None:
+    assert TABLE_CLASSIFICATIONS["openai_usage_completions"] is RetentionTableClass.HISTORICAL_EVIDENCE
+    assert "openai_usage_completions" not in PRUNABLE_HISTORY_TABLES
+    assert "openai_usage_completions" not in PRUNABLE_HISTORY_ORDER
+    assert "openai_usage_completions" not in PRUNABLE_TIMESTAMP_COLUMNS
+
+
+def test_admin_costs_are_retained_historical_evidence() -> None:
+    assert TABLE_CLASSIFICATIONS["openai_costs"] is RetentionTableClass.HISTORICAL_EVIDENCE
+    assert "openai_costs" not in PRUNABLE_HISTORY_TABLES
 
 
 def test_retention_plan_represents_immutable_diagnostics() -> None:
