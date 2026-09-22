@@ -61,19 +61,24 @@ def _decimal_text(value: Decimal) -> str:
     return format(value, "f")
 
 
-def _cost_groups(connection: Any, where: str, params: list[int]) -> list[dict[str, Any]]:
+def _cost_groups(connection: Any, where: str, params: list[int]) -> tuple[list[dict[str, Any]], int]:
     result: list[dict[str, Any]] = []
+    omitted = 0
     for dimension, column in (("project", "project_id"), ("line_item", "line_item")):
         rows = connection.execute(
-            f"SELECT {column} AS value, currency, SUM(amount_value) AS amount_sum, GROUP_CONCAT(amount_value) AS amounts, COUNT(amount_value) AS result_count FROM openai_costs WHERE {where} GROUP BY {column}, currency ORDER BY currency, value LIMIT ?",
-            [*params, MAX_GROUPS],
+            f"SELECT {column} AS value, currency, SUM(amount_value) AS amount_sum, GROUP_CONCAT(amount_value) AS amounts, COUNT(amount_value) AS result_count FROM openai_costs WHERE {where} GROUP BY {column}, currency",
+            params,
         ).fetchall()
+        groups: list[dict[str, Any]] = []
         for row in rows:
             amount = sum((_money(value) or Decimal(0) for value in row["amounts"].split(",")), Decimal(0)) if row["amounts"] else None
             if amount is None:
                 continue
-            result.append({"dimension": dimension, "value": row["value"], "amount": _decimal_text(amount), "currency": row["currency"], "result_count": int(row["result_count"])})
-    return result
+            groups.append({"dimension": dimension, "value": row["value"], "amount": _decimal_text(amount), "currency": row["currency"], "result_count": int(row["result_count"])})
+        groups.sort(key=lambda group: (-Decimal(group["amount"]), group["currency"] or "", group["value"] or ""))
+        omitted += max(0, len(groups) - MAX_GROUPS)
+        result.extend(groups[:MAX_GROUPS])
+    return result, omitted
 
 
 def costs_summary(connection: Any, *, range_key: str, enabled: bool, credential_present: bool, now: datetime | None = None) -> dict[str, Any]:
@@ -86,7 +91,8 @@ def costs_summary(connection: Any, *, range_key: str, enabled: bool, credential_
         if amount is not None:
             totals[row["currency"]] += amount
     latest = rows[0] if rows else None
-    return {"provenance": {"source": "openai_admin_api", "scope": "organization", "attribution": "unavailable"}, "interval": selected, "health": costs_health(connection, enabled=enabled, credential_present=credential_present), "totals": [{"currency": currency, "amount": _decimal_text(amount)} for currency, amount in sorted(totals.items(), key=lambda item: item[0] or "")], "result_count": len(rows), "latest_bucket": _bucket(latest), "groups": _cost_groups(connection, where, params)}
+    groups, groups_omitted = _cost_groups(connection, where, params)
+    return {"provenance": {"source": "openai_admin_api", "scope": "organization", "attribution": "unavailable"}, "interval": selected, "health": costs_health(connection, enabled=enabled, credential_present=credential_present), "totals": [{"currency": currency, "amount": _decimal_text(amount)} for currency, amount in sorted(totals.items(), key=lambda item: item[0] or "")], "result_count": len(rows), "latest_bucket": _bucket(latest), "groups": groups, "groups_omitted": groups_omitted}
 
 
 def summary(connection: Any, *, range_key: str, enabled: bool, costs_enabled: bool, credential_present: bool, now: datetime | None = None) -> dict[str, Any]:

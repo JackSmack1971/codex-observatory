@@ -24,8 +24,9 @@ Sync state is independent of facts and records the requested/completed window,
 in-progress cursor, page/bucket counts, last success, and last error. Health
 states are `ADMIN_DISABLED`, `ADMIN_CREDENTIAL_MISSING`, `ADMIN_READY`,
 `ADMIN_SYNCING`, `ADMIN_HEALTHY`, `ADMIN_DEGRADED`, and `ADMIN_FAILED`.
-Only one local Admin sync may run at a time; a concurrent invocation fails fast
-with `ADMIN_BUSY` and cannot change the active sync's cursor or window. Admin
+Only one Admin sync process may run at a time; a concurrent invocation fails
+fast with `ADMIN_BUSY` and cannot change the active sync's cursor or window.
+Admin
 transport errors pass through one sanitization boundary before persistence,
 health, CLI output, or re-raising.
 

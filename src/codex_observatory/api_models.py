@@ -235,6 +235,7 @@ class AdminCostsSummary(ApiModel):
     result_count: int
     latest_bucket: AdminBucket
     groups: list[AdminCostGroup]
+    groups_omitted: int = 0
 
 
 class AdminSummary(ApiModel):
