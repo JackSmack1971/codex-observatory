@@ -70,6 +70,20 @@ def test_costs_are_exact_separate_by_currency_and_grouped(tmp_path: Path) -> Non
         db.close()
 
 
+def test_cost_groups_aggregate_before_limiting_rows(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    try:
+        start = int(NOW.timestamp()) - 3600
+        for index in range(1001):
+            _cost(db, f"c{index}", project="p1", line_item="input", currency="usd", amount="1", start=start)
+        db.commit()
+        result = costs_summary(db, range_key="24h", enabled=True, credential_present=True, now=NOW)
+        project = next(row for row in result["groups"] if row["dimension"] == "project" and row["value"] == "p1")
+        assert project["amount"] == "1001" and project["result_count"] == 1001
+    finally:
+        db.close()
+
+
 def test_time_range_and_public_api_are_fixed_read_only_surfaces(tmp_path: Path) -> None:
     db = _db(tmp_path)
     db.close()

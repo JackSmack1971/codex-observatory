@@ -64,6 +64,7 @@ _TABLE_CLASSIFICATIONS = {
     "openai_cost_sync_state": RetentionTableClass.CONTROL_STATE,
     "openai_cost_sync_lock": RetentionTableClass.CONTROL_STATE,
     "openai_admin_sync_state": RetentionTableClass.CONTROL_STATE,
+    "openai_admin_sync_lock": RetentionTableClass.CONTROL_STATE,
 }
 
 TABLE_CLASSIFICATIONS: Final[Mapping[str, RetentionTableClass]] = MappingProxyType(_TABLE_CLASSIFICATIONS)

@@ -8,10 +8,13 @@ import os
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from .admin_sync_lock import acquire as acquire_database_lock
+from .admin_sync_lock import release as release_database_lock
 from .config import OpenAIAdminConfig
 from .sqlite import utc_now
 
@@ -31,6 +34,7 @@ PUBLIC_USAGE_FIELDS = (
     "request_start", "request_end", "retrieved_at", "adapter_schema_version", "first_observed_at", "last_observed_at",
 )
 _SYNC_LOCK = threading.Lock()
+_LOCK_TABLE = "openai_admin_sync_lock"
 _AUTHORIZATION_VALUE = re.compile(r"(?i)(authorization\s*[:=]\s*[\"']?(?:bearer\s+)?)[^\"'\s,}\]]+(?:[\"'])?")
 
 
@@ -233,12 +237,17 @@ def _sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, no
 
 def sync(connection: Any, config: OpenAIAdminConfig, client: UsageClient, *, now: datetime | None = None,
           sleep: Callable[[float], None] = time.sleep, max_attempts: int = 3) -> dict[str, Any]:
-    """Run one Admin sync, failing fast when another local sync is active."""
+    """Run one Admin sync, failing fast when another process syncs it."""
     if not _SYNC_LOCK.acquire(blocking=False):
         return {"collector": COLLECTOR, "status": "ADMIN_BUSY", "reason": "another Admin sync is active", "last_success": None, "last_error": None}
+    owner_id = uuid.uuid4().hex
     try:
+        if config.enabled and not acquire_database_lock(connection, _LOCK_TABLE, owner_id):
+            return {"collector": COLLECTOR, "status": "ADMIN_BUSY", "reason": "another Admin sync is active", "last_success": None, "last_error": None}
         return _sync(connection, config, client, now=now, sleep=sleep, max_attempts=max_attempts)
     finally:
+        if config.enabled:
+            release_database_lock(connection, _LOCK_TABLE, owner_id)
         _SYNC_LOCK.release()
 
 

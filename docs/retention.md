@@ -167,6 +167,7 @@ Checkpoint and `VACUUM` maintenance remain explicitly deferred.
 | `openai_cost_sync_state` | `CONTROL_STATE` |
 | `openai_cost_sync_lock` | `CONTROL_STATE` |
 | `openai_admin_sync_state` | `CONTROL_STATE` |
+| `openai_admin_sync_lock` | `CONTROL_STATE` |
 <!-- TABLE_CLASSIFICATIONS:END -->
 
 `app_server_token_usage` is updated in place for a `(thread_id, turn_id)` and

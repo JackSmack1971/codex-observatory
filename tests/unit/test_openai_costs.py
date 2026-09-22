@@ -315,9 +315,9 @@ def test_fresh_and_upgrade_migrations(tmp_path: Path) -> None:
     migrate(fresh)
     assert (
         fresh.execute(
-            "SELECT version FROM schema_migrations WHERE version=12"
+            "SELECT version FROM schema_migrations WHERE version=13"
         ).fetchone()[0]
-        == 12
+            == 13
     )
     fresh.close()
     upgraded = connect(tmp_path / "upgrade.db")

@@ -75,7 +75,7 @@ def test_migration_six_upgrade_matches_fresh_schema(tmp_path: Path) -> None:
         for row in phase6.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )
-    ] == list(range(1, 13))
+    ] == list(range(1, 14))
 
 
 def test_retention_audit_records_survive_restart(tmp_path: Path) -> None:

@@ -64,17 +64,15 @@ def _decimal_text(value: Decimal) -> str:
 def _cost_groups(connection: Any, where: str, params: list[int]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for dimension, column in (("project", "project_id"), ("line_item", "line_item")):
-        rows = connection.execute(f"SELECT {column} AS value, currency, amount_value FROM openai_costs WHERE {where} ORDER BY bucket_start DESC LIMIT ?", [*params, MAX_GROUPS * 10]).fetchall()
-        grouped: dict[tuple[str | None, str | None], tuple[Decimal, int]] = defaultdict(lambda: (Decimal(0), 0))
+        rows = connection.execute(
+            f"SELECT {column} AS value, currency, SUM(amount_value) AS amount_sum, GROUP_CONCAT(amount_value) AS amounts, COUNT(amount_value) AS result_count FROM openai_costs WHERE {where} GROUP BY {column}, currency ORDER BY currency, value LIMIT ?",
+            [*params, MAX_GROUPS],
+        ).fetchall()
         for row in rows:
-            amount = _money(row["amount_value"])
+            amount = sum((_money(value) or Decimal(0) for value in row["amounts"].split(",")), Decimal(0)) if row["amounts"] else None
             if amount is None:
                 continue
-            key = (row["value"], row["currency"])
-            current, count = grouped[key]
-            grouped[key] = (current + amount, count + 1)
-        for (value, currency), (amount, count) in sorted(grouped.items(), key=lambda item: (item[0][1] or "", item[0][0] or ""))[:MAX_GROUPS]:
-            result.append({"dimension": dimension, "value": value, "amount": _decimal_text(amount), "currency": currency, "result_count": count})
+            result.append({"dimension": dimension, "value": row["value"], "amount": _decimal_text(amount), "currency": row["currency"], "result_count": int(row["result_count"])})
     return result
 
 

@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from .admin_sync_lock import acquire as acquire_database_lock
+from .admin_sync_lock import release as release_database_lock
 from .config import OpenAIAdminConfig
 from .openai_admin import _error_status, _value, sanitize_admin_error
 from .sqlite import utc_now
@@ -43,7 +45,6 @@ PUBLIC_COST_FIELDS = (
     "last_observed_at",
 )
 _SYNC_LOCK = threading.Lock()
-_LOCK_LEASE_SECONDS = 300
 
 
 class CostsClient(Protocol):
@@ -149,39 +150,15 @@ def _set_state(
     )
 
 
+_LOCK_TABLE = "openai_cost_sync_lock"
+
+
 def _acquire_database_lock(connection: Any, owner_id: str) -> bool:
-    """Acquire the costs lease across threads and OS processes."""
-    try:
-        connection.execute("PRAGMA busy_timeout=0")
-        connection.execute("BEGIN IMMEDIATE")
-    except Exception:  # noqa: BLE001 - a locked SQLite writer means busy.
-        connection.rollback()
-        connection.execute("PRAGMA busy_timeout=5000")
-        return False
-    now = int(time.time())
-    row = connection.execute(
-        "SELECT owner_id,lease_expires_at FROM openai_cost_sync_lock WHERE lock_id=1"
-    ).fetchone()
-    if row and int(row["lease_expires_at"]) > now:
-        connection.rollback()
-        connection.execute("PRAGMA busy_timeout=5000")
-        return False
-    connection.execute(
-        "INSERT INTO openai_cost_sync_lock(lock_id,owner_id,lease_expires_at) VALUES(1,?,?) "
-        "ON CONFLICT(lock_id) DO UPDATE SET owner_id=excluded.owner_id,lease_expires_at=excluded.lease_expires_at",
-        (owner_id, now + _LOCK_LEASE_SECONDS),
-    )
-    connection.commit()
-    connection.execute("PRAGMA busy_timeout=5000")
-    return True
+    return acquire_database_lock(connection, _LOCK_TABLE, owner_id)
 
 
 def _release_database_lock(connection: Any, owner_id: str) -> None:
-    with connection:
-        connection.execute(
-            "DELETE FROM openai_cost_sync_lock WHERE lock_id=1 AND owner_id=?",
-            (owner_id,),
-        )
+    release_database_lock(connection, _LOCK_TABLE, owner_id)
 
 
 def _decimal(value: Any, name: str) -> str | None:
